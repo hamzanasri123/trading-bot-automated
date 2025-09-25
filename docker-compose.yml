@@ -1,0 +1,9 @@
+# docker-compose.yml
+version: '3.8'
+services:
+  trading-bot:
+    build: .
+    # Mount the config file so you can change it without rebuilding the image
+    volumes:
+      - ./config.py:/app/config.py
+    restart: unless-stopped

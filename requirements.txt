@@ -1,0 +1,4 @@
+websockets
+sortedcontainers
+ccxt[async,okx]
+httpx
