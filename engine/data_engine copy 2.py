@@ -8,6 +8,8 @@ class OrderBook:
         self.asks = SortedDict()
 
     def update(self, bids, asks):
+        # --- CORRECTION APPLIQUÉE ICI ---
+        # Gère les deux formats de données (Binance: 2 valeurs, OKX: 4 valeurs)
         for item in bids:
             price, qty = float(item[0]), float(item[1])
             if qty == 0:
@@ -23,14 +25,10 @@ class OrderBook:
                 self.asks[price] = qty
 
     def get_bids(self, n: int):
-        # --- CORRECTION DÉFINITIVE ---
-        # On utilise .items() pour obtenir les paires (clé, valeur)
-        return [[price, qty] for price, qty in self.bids.items().islice(-n, reverse=True)]
+        return [[price, qty] for price, qty in self.bids.islice(-n, reverse=True)]
 
     def get_asks(self, n: int):
-        # --- CORRECTION DÉFINITIVE ---
-        # On utilise .items() pour obtenir les paires (clé, valeur)
-        return [[price, qty] for price, qty in self.asks.items().islice(0, n)]
+        return [[price, qty] for price, qty in self.asks.islice(0, n)]
 
 class DataEngine:
     def __init__(self):
@@ -45,6 +43,7 @@ class DataEngine:
                 self.order_books[book_key] = OrderBook()
                 self.logger.info(f"Order book created for {platform}-{symbol}.")
             
+            # La méthode update est maintenant flexible
             self.order_books[book_key].update(data['b'], data['a'])
         except Exception as e:
             self.logger.error(f"Error processing direct update in DataEngine: {e}", exc_info=True)
