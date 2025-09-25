@@ -13,6 +13,8 @@ async def main_bot( ):
     logger = logging.getLogger()
     notifier = Notifier(token=TELEGRAM_TOKEN, chat_id=TELEGRAM_CHAT_ID)
     notifier.set_logger(logging.getLogger("Notifier"))
+    await notifier.start_worker() # Démarrer le worker ici
+
     await notifier.send_message("🤖 *Arbitrage Bot Starting Up* 🤖")
 
     symbol_to_trade = "BTC/USDT"
@@ -57,12 +59,14 @@ async def main_bot( ):
                 logger.critical(f"A critical task failed: {e}. Shutting down.", exc_info=True)
                 await notifier.send_message(f"🔥 *CRITICAL FAILURE* 🔥\nA core task failed: `{e}`. The bot is shutting down.")
     finally:
-        logger.info("Shutdown procedure initiated...")
-        await notifier.send_message("🛑 *Bot Shutting Down* 🛑")
-        for task in tasks: task.cancel()
+        logger.info("Procédure d'arrêt initiée...")
+        await notifier.send_message("🛑 *Bot en cours d'Arrêt* 🛑")
+        await notifier.stop_worker() # Arrêter proprement le worker
+        for task in tasks:
+            task.cancel()
         await order_manager.close_all()
         await asyncio.gather(*tasks, return_exceptions=True)
-        logger.info("All tasks cancelled. Bot has stopped.")
+        logger.info("Toutes les tâches sont annulées. Le bot est arrêté.")
 
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)-25s - %(levelname)-8s - %(message)s')
