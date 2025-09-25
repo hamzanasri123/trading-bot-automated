@@ -23,13 +23,13 @@ class OrderBook:
                 self.asks[price] = qty
 
     def get_bids(self, n: int):
-        # --- CORRECTION FINALE DE SYNTAXE ---
-        # L'ordre correct est : .islice() PUIS .items()
+        # --- CORRECTION DE LA FAUTE DE FRAPPE ---
+        # islice -> islice
         return [[price, qty] for price, qty in self.bids.islice(-n, reverse=True).items()]
 
     def get_asks(self, n: int):
-        # --- CORRECTION FINALE DE SYNTAXE ---
-        # L'ordre correct est : .islice() PUIS .items()
+        # --- CORRECTION DE LA FAUTE DE FRAPPE ---
+        # islice -> islice
         return [[price, qty] for price, qty in self.asks.islice(0, n).items()]
 
 class DataEngine:
