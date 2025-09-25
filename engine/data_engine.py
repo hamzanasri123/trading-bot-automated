@@ -23,14 +23,14 @@ class OrderBook:
                 self.asks[price] = qty
 
     def get_bids(self, n: int):
-        # --- CORRECTION DÉFINITIVE ---
-        # On utilise .items() pour obtenir les paires (clé, valeur)
-        return [[price, qty] for price, qty in self.bids.items().islice(-n, reverse=True)]
+        # --- CORRECTION FINALE DE SYNTAXE ---
+        # L'ordre correct est : .islice() PUIS .items()
+        return [[price, qty] for price, qty in self.bids.islice(-n, reverse=True).items()]
 
     def get_asks(self, n: int):
-        # --- CORRECTION DÉFINITIVE ---
-        # On utilise .items() pour obtenir les paires (clé, valeur)
-        return [[price, qty] for price, qty in self.asks.items().islice(0, n)]
+        # --- CORRECTION FINALE DE SYNTAXE ---
+        # L'ordre correct est : .islice() PUIS .items()
+        return [[price, qty] for price, qty in self.asks.islice(0, n).items()]
 
 class DataEngine:
     def __init__(self):
