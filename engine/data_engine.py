@@ -25,10 +25,10 @@ class OrderBook:
                 self.asks[price] = qty
 
     def get_bids(self, n: int):
-        return list(self.bids.islice(-n, reverse=True))
+        return [[price, qty] for price, qty in self.bids.islice(-n, reverse=True)]
 
     def get_asks(self, n: int):
-        return list(self.asks.islice(0, n))
+        return [[price, qty] for price, qty in self.asks.islice(0, n)]
 
 class DataEngine:
     def __init__(self):
