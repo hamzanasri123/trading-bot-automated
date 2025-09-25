@@ -17,6 +17,7 @@ class StrategyEngine:
         self.active_maker_trade = None
 
     def _print_order_books(self):
+        # ... (cette méthode ne change pas)
         print("\n" + "="*80 + f"\n--- ORDER BOOK SNAPSHOT ({time.strftime('%H:%M:%S')}) ---")
         order_books_copy = dict(self._order_books)
         if not order_books_copy: print("No order books available.")
@@ -34,6 +35,7 @@ class StrategyEngine:
         print("="*80 + "\n")
 
     async def run(self):
+        # ... (cette méthode ne change pas)
         self.logger.info("Strategy Engine is running.")
         while True:
             if self.active_maker_trade:
@@ -57,6 +59,7 @@ class StrategyEngine:
                     self.evaluate_market_pair(book_B, book_A, platform_B_key[0], platform_A_key[0], platform_B_key[1])
 
     def evaluate_market_pair(self, book_buy_on, book_sell_on, buy_platform_name, sell_platform_name, symbol):
+        # ... (cette méthode ne change pas)
         asks, bids = book_buy_on.get_asks(1), book_sell_on.get_bids(1)
         if not asks or not bids: return
         best_ask_price, best_bid_price = float(asks[0][0]), float(bids[0][0])
@@ -69,9 +72,11 @@ class StrategyEngine:
             self.execute_taker_strategy(book_buy_on, book_sell_on, buy_platform_name, sell_platform_name, symbol)
         elif spread_pct > self.maker_spread_threshold_pct and not self.active_maker_trade:
             self.logger.info(f"[MAKER STRATEGY] Favorable spread ({spread_pct:.4f}%). Triggering Maker logic.")
-            asyncio.create_task(self.execute_maker_strategy(best_ask_price, best_bid_price, buy_platform_name, sell_platform_name, symbol))
+            # On passe les deux carnets d'ordres à la stratégie Maker
+            asyncio.create_task(self.execute_maker_strategy(book_buy_on, book_sell_on, buy_platform_name, sell_platform_name, symbol))
 
     def execute_taker_strategy(self, book_buy, book_sell, platform_buy_name, platform_sell_name, symbol):
+        # ... (cette méthode ne change pas)
         asks, bids = book_buy.get_asks(10), book_sell.get_bids(10)
         if not asks or not bids: return
         taker_fee_buy = self._order_manager.get_fees(platform_buy_name)['taker']
@@ -84,15 +89,48 @@ class StrategyEngine:
             asyncio.create_task(self._order_manager.execute_arbitrage(volume=result['volume'], platform_buy=platform_buy_name, platform_sell=platform_sell_name, max_buy_price=float(asks[0][0]), min_sell_price=float(bids[0][0]), symbol=symbol))
             asyncio.create_task(self.cooldown_trading())
 
-    async def execute_maker_strategy(self, ask_price, bid_price, buy_platform, sell_platform, symbol):
+    async def execute_maker_strategy(self, book_buy_on, book_sell_on, buy_platform, sell_platform, symbol):
+        # --- CORRECTION DE LOGIQUE APPLIQUÉE ICI ---
         if self.active_maker_trade: return
+
+        # On récupère les meilleurs prix des DEUX plateformes
+        buy_asks = book_buy_on.get_asks(1)
+        buy_bids = book_buy_on.get_bids(1)
+        sell_asks = book_sell_on.get_asks(1)
+        sell_bids = book_sell_on.get_bids(1)
+
+        if not all([buy_asks, buy_bids, sell_asks, sell_bids]):
+            self.logger.debug("Maker strategy aborted: incomplete order books.")
+            return
+
+        # Le meilleur prix pour acheter sur la plateforme d'achat
+        best_ask_on_buy_platform = float(buy_asks[0][0])
+        # Le meilleur prix pour vendre sur la plateforme de vente
+        best_bid_on_sell_platform = float(sell_bids[0][0])
+
+        # On se place juste à l'intérieur du spread pour devenir le meilleur prix
+        # Notre prix d'achat est juste au-dessus du meilleur acheteur actuel sur la plateforme d'achat
+        our_buy_price = float(buy_bids[0][0]) + 0.01
+        # Notre prix de vente est juste en dessous du meilleur vendeur actuel sur la plateforme de vente
+        our_sell_price = float(sell_asks[0][0]) - 0.01
+
+        # Vérification de sécurité : nos prix ne doivent pas se croiser
+        if our_buy_price >= our_sell_price:
+            self.logger.info(f"Maker prices crossed or invalid. Buy: {our_buy_price}, Sell: {our_sell_price}. Aborting.")
+            return
+        
+        # Vérification de sécurité : nos prix ne doivent pas être pires que le marché
+        if our_buy_price >= best_ask_on_buy_platform or our_sell_price <= best_bid_on_sell_platform:
+             self.logger.info(f"Maker prices would cross the live market spread. Aborting.")
+             return
+
         self.logger.info("--- Triggering MAKER orders (Post-Only) ---")
-        our_buy_price, our_sell_price = bid_price + 0.01, ask_price - 0.01
-        if our_buy_price >= our_sell_price: self.logger.info("Maker prices crossed. Aborting."); return
         volume = MAX_TRADE_SIZE_USD / our_buy_price
         buy_order_task = asyncio.create_task(self._order_manager.create_limit_order(buy_platform, symbol, 'buy', volume, our_buy_price, post_only=True))
         sell_order_task = asyncio.create_task(self._order_manager.create_limit_order(sell_platform, symbol, 'sell', volume, our_sell_price, post_only=True))
+        
         buy_result, sell_result = await asyncio.gather(buy_order_task, sell_order_task)
+        
         if buy_result and buy_result.get('id') and sell_result and sell_result.get('id'):
             self.active_maker_trade = {"buy_leg": buy_result, "sell_leg": sell_result, "status": "active", "creation_time": time.time()}
             self.logger.info(f"Active Maker trade created. Buy ID: {buy_result['id']}, Sell ID: {sell_result['id']}")
@@ -102,6 +140,7 @@ class StrategyEngine:
             if buy_result and buy_result.get('id'): await self._order_manager.cancel_order(buy_platform, buy_result['id'], symbol)
             if sell_result and sell_result.get('id'): await self._order_manager.cancel_order(sell_platform, sell_result['id'], symbol)
 
+    # ... (le reste du fichier ne change pas)
     async def check_maker_trade_status(self):
         if not self.active_maker_trade: return
         buy_leg, sell_leg = self.active_maker_trade['buy_leg'], self.active_maker_trade['sell_leg']
