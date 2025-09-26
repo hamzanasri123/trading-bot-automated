@@ -26,7 +26,7 @@ class StrategyEngine:
             asks, bids = book.get_asks(3), book.get_bids(3)
             if not asks or not bids: print("Order book is empty or incomplete."); continue
             print("ASKS (Sell)                  | BIDS (Buy)")
-            print("Price (USDT)   | Qty (BTC)     | Price (USDT)   | Qty (BTC)")
+            print("Price (USDC)   | Qty (BTC)     | Price (USDC)   | Qty (BTC)")
             print("--------------|---------------|----------------|---------------")
             for i in range(3):
                 ask_price, ask_qty = asks[i] if i < len(asks) else ('-', '-')
