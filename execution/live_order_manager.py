@@ -1,7 +1,7 @@
 # execution/live_order_manager.py
 import asyncio, logging
 import ccxt.async_support as ccxt
-from config import API_KEYS, PAPER_TRADING_MODE, MAX_TRADE_SIZE_USD, TRADING_PAIR
+from config import API_KEYS, PAPER_TRADING_MODE, MAX_TRADE_SIZE_USD
 
 class LiveOrderManager:
     def __init__(self, notifier, trade_logger):
