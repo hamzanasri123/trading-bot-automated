@@ -1,74 +1,85 @@
 # main.py
-import asyncio
-import logging
-from config import PAPER_TRADING_MODE, TELEGRAM_TOKEN, TELEGRAM_CHAT_ID
-from utils.notifier import Notifier
+import asyncio, logging, signal
+from config import PAPER_TRADING_MODE, API_KEYS
 from execution.live_order_manager import LiveOrderManager
-from connectors.binance_connector import BinanceConnector
-from connectors.okx_connector import OkxConnector
 from engine.data_engine import DataEngine
 from engine.strategy_engine import StrategyEngine
+from connectors.binance_connector import BinanceConnector
+from connectors.okx_connector import OkxConnector
+from utils.notifier import Notifier
 
-async def main_bot( ):
-    logger = logging.getLogger()
-    notifier = Notifier(token=TELEGRAM_TOKEN, chat_id=TELEGRAM_CHAT_ID)
-    notifier.set_logger(logging.getLogger("Notifier"))
-    await notifier.start_worker() # Démarrer le worker ici
+# Configuration du logging
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)-20s - %(levelname)-8s - %(message)s')
 
-    await notifier.send_message("🤖 *Arbitrage Bot Starting Up* 🤖")
-
-    symbol_to_trade = "BTC/USDT"
-    data_engine = DataEngine()
+async def main_bot():
+    shutdown_event = asyncio.Event()
     
-    if PAPER_TRADING_MODE: logger.info("Trading Mode: PAPER TRADING (Testnet)")
-    else: logger.info("Trading Mode: LIVE TRADING (Production)")
+    # Initialisation des composants
+    notifier = Notifier()
+    if PAPER_TRADING_MODE:
+        logging.info("Trading Mode: PAPER TRADING (Testnet)")
+        order_manager = LiveOrderManager(notifier)
+    else:
+        logging.info("Trading Mode: LIVE TRADING")
+        order_manager = LiveOrderManager(notifier)
     
-    order_manager = LiveOrderManager(notifier)
-    strategy_engine = StrategyEngine(data_engine.order_books, order_manager, notifier)
-    
-    binance_connector = BinanceConnector(data_engine)
-    okx_connector = OkxConnector(data_engine)
-
     await order_manager.initialize()
-    logger.info("--- Initial Balance Check ---")
-    try:
-        if 'Binance' in order_manager.exchanges:
-            usdt_balance = await order_manager.get_balance('Binance', 'USDT')
-            btc_balance = await order_manager.get_balance('Binance', 'BTC')
-            logger.info(f"[Binance] Available Balance: {usdt_balance or 0.0:.4f} USDT, {btc_balance or 0.0:.8f} BTC")
-        if 'OKX' in order_manager.exchanges:
-            usdt_balance_okx = await order_manager.get_balance('OKX', 'USDT')
-            btc_balance_okx = await order_manager.get_balance('OKX', 'BTC')
-            logger.info(f"[OKX] Available Balance: {usdt_balance_okx or 0.0:.4f} USDT, {btc_balance_okx or 0.0:.8f} BTC")
-    except Exception as e: logger.error(f"Could not retrieve initial balances: {e}")
-    logger.info("-----------------------------")
 
-    logger.info("Starting all arbitrage bot tasks...")
+    logging.info("--- Initial Balance Check ---")
+    for platform in order_manager.exchanges.keys():
+        for currency in ['USDT', 'BTC']:
+            balance = await order_manager.get_balance(platform, currency)
+            logging.info(f"[{platform}] Available balance: {balance:.4f} {currency}")
+    logging.info("-----------------------------")
+
+    data_engine = DataEngine()
+    strategy_engine = StrategyEngine(data_engine.order_books, order_manager, notifier)
+
+    # Création des connecteurs
+    binance_connector = BinanceConnector('Binance', 'BTC/USDT', data_engine.process_update)
+    okx_connector = OkxConnector('OKX', 'BTC-USDT', data_engine.process_update)
+
+    # Lancement des tâches
+    logging.info("Starting all arbitrage bot tasks...")
     tasks = [
-        asyncio.create_task(binance_connector.connect(symbol_to_trade)),
-        asyncio.create_task(okx_connector.connect(symbol_to_trade)),
+        asyncio.create_task(binance_connector.run()),
+        asyncio.create_task(okx_connector.run()),
         asyncio.create_task(data_engine.run()),
         asyncio.create_task(strategy_engine.run()),
+        asyncio.create_task(notifier.run())
     ]
-    
+
+    # Gestion de l'arrêt propre
+    loop = asyncio.get_running_loop()
+    def handle_shutdown_signal():
+        logging.warning("\nShutdown signal received. Initiating graceful shutdown...")
+        shutdown_event.set()
+
     try:
-        done, pending = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
-        for task in done:
-            try: task.result()
-            except Exception as e:
-                logger.critical(f"A critical task failed: {e}. Shutting down.", exc_info=True)
-                await notifier.send_message(f"🔥 *CRITICAL FAILURE* 🔥\nA core task failed: `{e}`. The bot is shutting down.")
+        loop.add_signal_handler(signal.SIGINT, handle_shutdown_signal)
+        loop.add_signal_handler(signal.SIGTERM, handle_shutdown_signal)
+    except NotImplementedError: # Pour la compatibilité Windows
+        pass
+
+    # Boucle principale de surveillance
+    try:
+        await shutdown_event.wait()
     finally:
-        logger.info("Procédure d'arrêt initiée...")
-        await notifier.send_message("🛑 *Bot en cours d'Arrêt* 🛑")
-        await notifier.stop_worker() # Arrêter proprement le worker
+        logging.info("Initiating shutdown procedure...")
+        # --- MODIFICATION : Fermeture du pool de processus ---
+        strategy_engine.process_pool.shutdown(wait=True)
+        logging.info("Process pool shut down.")
+        
         for task in tasks:
             task.cancel()
-        await order_manager.close_all()
         await asyncio.gather(*tasks, return_exceptions=True)
-        logger.info("Toutes les tâches sont annulées. Le bot est arrêté.")
+        await order_manager.close_all()
+        logging.info("All tasks have been cancelled and connections closed.")
 
 if __name__ == "__main__":
-    logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)-25s - %(levelname)-8s - %(message)s')
-    try: asyncio.run(main_bot())
-    except KeyboardInterrupt: logging.info("\nShutdown requested by user (Ctrl+C).")
+    try:
+        asyncio.run(main_bot())
+    except KeyboardInterrupt:
+        logging.info("Bot stopped by user.")
+    finally:
+        logging.info("Bot has been shut down.")
