@@ -1,6 +1,7 @@
 # main.py
 import asyncio, logging, signal
-from config import PAPER_TRADING_MODE, API_KEYS
+# --- MODIFICATION : Importer les variables de configuration ---
+from config import PAPER_TRADING_MODE, TELEGRAM_TOKEN, TELEGRAM_CHAT_ID
 from execution.live_order_manager import LiveOrderManager
 from engine.data_engine import DataEngine
 from engine.strategy_engine import StrategyEngine
@@ -14,8 +15,10 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)-20s - %(le
 async def main_bot():
     shutdown_event = asyncio.Event()
     
+    # --- MODIFICATION : Passer les arguments au Notifier ---
     # Initialisation des composants
-    notifier = Notifier()
+    notifier = Notifier(token=TELEGRAM_TOKEN, chat_id=TELEGRAM_CHAT_ID)
+    
     if PAPER_TRADING_MODE:
         logging.info("Trading Mode: PAPER TRADING (Testnet)")
         order_manager = LiveOrderManager(notifier)
@@ -29,7 +32,8 @@ async def main_bot():
     for platform in order_manager.exchanges.keys():
         for currency in ['USDT', 'BTC']:
             balance = await order_manager.get_balance(platform, currency)
-            logging.info(f"[{platform}] Available balance: {balance:.4f} {currency}")
+            if balance is not None:
+                logging.info(f"[{platform}] Available balance: {balance:.4f} {currency}")
     logging.info("-----------------------------")
 
     data_engine = DataEngine()
@@ -66,7 +70,7 @@ async def main_bot():
         await shutdown_event.wait()
     finally:
         logging.info("Initiating shutdown procedure...")
-        # --- MODIFICATION : Fermeture du pool de processus ---
+        # Ferme le pool de processus proprement
         strategy_engine.process_pool.shutdown(wait=True)
         logging.info("Process pool shut down.")
         
