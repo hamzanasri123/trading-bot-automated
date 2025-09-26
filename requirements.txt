@@ -2,3 +2,5 @@ websockets
 sortedcontainers
 ccxt[async,okx]
 httpx
+requests
+pandas
