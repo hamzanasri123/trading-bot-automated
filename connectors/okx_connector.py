@@ -6,7 +6,7 @@ class OkxConnector:
     def __init__(self, data_engine):
         self.name = "OKX"
         self.symbol = "BTC-USDC"
-        self.ws_url = "wss://wspap.okx.com:8443/ws/v5/public?brokerId=9999"
+        self.ws_url = "wss://wseea.okx.com:8443/ws/v5/public"
         self.logger = logging.getLogger(self.__class__.__name__)
         self.data_engine = data_engine
 
