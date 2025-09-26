@@ -23,7 +23,7 @@ PAPER_TRADING_MODE = True # Set to False for cloud deployment
 # --- TELEGRAM NOTIFICATIONS ---
 # Get these from @BotFather and @userinfobot on Telegram. Set to '' to disable.
 TELEGRAM_TOKEN = '8333658619:AAHtpa0YxjWdVwMSCK8kbnNePvCXzTg9djI'
-TELEGRAM_CHAT_ID = '8333658619'
+TELEGRAM_CHAT_ID = '5763218219'
 
 # --- SAFETY & RISK MANAGEMENT ---
 # Maximum size in USD for a single arbitrage trade. This is your most important risk control.
