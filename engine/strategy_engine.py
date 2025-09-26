@@ -85,7 +85,8 @@ class StrategyEngine:
         if result and result['net_profit_pct'] > self.taker_profit_threshold_pct:
             self.logger.info(f"--- Triggering TAKER order for {result['net_profit_pct']:.4f}% profit. ---")
             self._is_trading_enabled = False
-            self.notifier.send_message(f"🚀 *Taker Opportunity Found* 🚀\nProfit: *{result['net_profit_pct']:.4f}%*\nBuy on {platform_buy_name}, Sell on {platform_sell_name}.")
+            #self.notifier.send_message(f"🚀 *Taker Opportunity Found* 🚀\nProfit: *{result['net_profit_pct']:.4f}%*\nBuy on {platform_buy_name}, Sell on {platform_sell_name}.")
+            asyncio.create_task(self.notifier.send_message(f"🚀 *Taker Opportunity Found* 🚀\nProfit: *{result['net_profit_pct']:.4f}%*\nBuy on {platform_buy_name}, Sell on {platform_sell_name}."))
             asyncio.create_task(self._order_manager.execute_arbitrage(volume=result['volume'], platform_buy=platform_buy_name, platform_sell=platform_sell_name, max_buy_price=float(asks[0][0]), min_sell_price=float(bids[0][0]), symbol=symbol))
             asyncio.create_task(self.cooldown_trading())
 
