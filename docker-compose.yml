@@ -1,9 +1,13 @@
-# docker-compose.yml
-version: '3.8'
 services:
   trading-bot:
     build: .
-    # Mount the config file so you can change it without rebuilding the image
-    volumes:
-      - ./config.py:/app/config.py
+    container_name: trading-bot-automated-trading-bot-1
     restart: unless-stopped
+    # --- NOUVELLE SECTION AJOUTÉE ICI ---
+    volumes:
+      # Syntaxe: [dossier sur la machine hôte]:[dossier dans le conteneur]
+      - ./logs:/app/logs
+
+networks:
+  default:
+    name: trading-bot-automated_default
