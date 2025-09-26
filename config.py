@@ -18,7 +18,7 @@ API_KEYS = {
 # --- TRADING MODE ---
 # Set to True to run in testnet/paper trading mode.
 # Set to False to run in live mode with real funds.
-PAPER_TRADING_MODE = True # Set to False for cloud deployment
+PAPER_TRADING_MODE = False # Set to False for cloud deployment
 
 # --- TELEGRAM NOTIFICATIONS ---
 # Get these from @BotFather and @userinfobot on Telegram. Set to '' to disable.
