@@ -7,7 +7,7 @@ from engine.strategy_engine import StrategyEngine
 from connectors.binance_connector import BinanceConnector
 from connectors.okx_connector import OkxConnector
 from utils.notifier import Notifier
-from utils.trade_logger import TradeLogger
+from analysis.trade_logger import TradeLogger
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)-20s - %(levelname)-8s - %(message)s')
 
