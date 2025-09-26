@@ -1,7 +1,11 @@
 # execution/live_order_manager.py
-import asyncio, logging
+import asyncio, logging, json
 import ccxt.async_support as ccxt
-from config import API_KEYS, PAPER_TRADING_MODE, MAX_TRADE_SIZE_USD
+from config import API_KEYS, PAPER_TRADING_MODE
+
+# --- NOUVEL IMPORT ---
+# Importe le nouveau module que nous avons créé
+from analysis.trade_logger import TradeLogger
 
 class LiveOrderManager:
     def __init__(self, notifier):
@@ -9,6 +13,9 @@ class LiveOrderManager:
         self.exchanges = {}
         self.fees = {}
         self.notifier = notifier
+        # --- NOUVELLE LIGNE ---
+        # Initialise le TradeLogger pour qu'il soit prêt à enregistrer
+        self.trade_logger = TradeLogger()
 
     async def initialize(self):
         self.logger.info("Initializing LiveOrderManager...")
@@ -43,16 +50,12 @@ class LiveOrderManager:
             self.logger.error(f"Error fetching balance for {currency} on {platform}: {e}"); return None
 
     async def execute_arbitrage(self, volume: float, platform_buy: str, platform_sell: str, max_buy_price: float, min_sell_price: float, symbol: str):
-        # --- CORRECTION APPLIQUÉE ICI ---
-        # La ligne fautive "buy_" a été supprimée et la logique a été clarifiée.
         self.logger.info(f"Executing TAKER arbitrage: BUY {volume:.6f} {symbol} on {platform_buy}, SELL on {platform_sell}")
 
-        # 1. Vérifier les soldes avant de trader
-        buy_currency = symbol.split('/')[0]  # BTC
-        sell_currency = symbol.split('/')[1] # USDT
-        
+        # La logique de vérification des soldes reste identique...
+        buy_currency = symbol.split('/')[0]
+        sell_currency = symbol.split('/')[1]
         cost_estimate = volume * max_buy_price
-        
         buy_platform_balance = await self.get_balance(platform_buy, sell_currency)
         sell_platform_balance = await self.get_balance(platform_sell, buy_currency)
 
@@ -60,27 +63,46 @@ class LiveOrderManager:
             self.logger.error("Could not verify balances. Aborting trade for safety.")
             await self.notifier.send_message("⚠️ *Trade Aborted* ⚠️\nCould not verify account balances before execution.")
             return
-
         if buy_platform_balance < cost_estimate:
             self.logger.error(f"Insufficient {sell_currency} on {platform_buy}. Needed: ~{cost_estimate:.2f}, Have: {buy_platform_balance:.2f}. Aborting.")
             await self.notifier.send_message(f"⚠️ *Trade Aborted* ⚠️\nInsufficient {sell_currency} on {platform_buy} to execute buy order.")
             return
-        
         if sell_platform_balance < volume:
             self.logger.error(f"Insufficient {buy_currency} on {platform_sell}. Needed: {volume:.6f}, Have: {sell_platform_balance:.6f}. Aborting.")
             await self.notifier.send_message(f"⚠️ *Trade Aborted* ⚠️\nInsufficient {buy_currency} on {platform_sell} to execute sell order.")
             return
 
-        # 2. Créer les tâches pour les deux ordres en parallèle
         buy_order_task = asyncio.create_task(self.create_limit_order(platform_buy, symbol, 'buy', volume, max_buy_price))
         sell_order_task = asyncio.create_task(self.create_limit_order(platform_sell, symbol, 'sell', volume, min_sell_price))
-
-        # 3. Attendre l'exécution des deux ordres
+        
         buy_result, sell_result = await asyncio.gather(buy_order_task, sell_order_task, return_exceptions=True)
 
-        # 4. Gérer les résultats (Post-trade reconciliation)
-        # (Cette partie est déjà implémentée dans les versions suivantes du code)
-        # ...
+        # --- INTÉGRATION DU JOURNAL DE TRADING ---
+        # On vérifie si les ordres ont été placés (même s'ils ne sont pas encore remplis)
+        buy_id = buy_result.get('id') if isinstance(buy_result, dict) else 'FAILED'
+        sell_id = sell_result.get('id') if isinstance(sell_result, dict) else 'FAILED'
+
+        # On enregistre l'événement, qu'il ait réussi ou non
+        if buy_id != 'FAILED' or sell_id != 'FAILED':
+            # Calcule le profit potentiel pour l'enregistrement
+            potential_profit_usd = (min_sell_price - max_buy_price) * volume
+            potential_profit_pct = (potential_profit_usd / (max_buy_price * volume)) * 100 if max_buy_price > 0 else 0
+            
+            self.trade_logger.log_trade(
+                event_type='TAKER_EXEC',
+                platform_buy=platform_buy,
+                platform_sell=platform_sell,
+                symbol=symbol,
+                volume=volume,
+                buy_price=max_buy_price,
+                sell_price=min_sell_price,
+                profit_usd=potential_profit_usd,
+                profit_pct=potential_profit_pct,
+                details=json.dumps({"buy_order_id": buy_id, "sell_order_id": sell_id})
+            )
+        
+        # La logique de réconciliation (hedging, etc.) viendrait ici
+        # Pour l'instant, on se contente d'enregistrer la tentative.
 
     async def create_limit_order(self, platform: str, symbol: str, side: str, amount: float, price: float, post_only: bool = False):
         try:
@@ -115,9 +137,13 @@ class LiveOrderManager:
 
     async def close_all(self):
         self.logger.info("Closing all exchange connections...")
+        # --- NOUVELLE LIGNE ---
+        # S'assure que tous les logs en attente sont écrits avant de fermer
+        self.trade_logger.close()
         for name, instance in self.exchanges.items():
             try:
                 await instance.close()
                 self.logger.info(f"Connection to {name} closed.")
             except Exception as e:
                 self.logger.error(f"Error closing connection to {name}: {e}")
+
