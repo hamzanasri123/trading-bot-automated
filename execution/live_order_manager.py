@@ -43,7 +43,7 @@ class LiveOrderManager:
                 self.exchanges[name] = instance
                 self.logger.info(f"Successfully connected and synced with: {name}")
                 
-                symbol_to_trade = TRADING_PAIR
+                symbol_to_trade = "BTC/USDC"
 
                 if symbol_to_trade in instance.markets:
                     market = instance.markets[symbol_to_trade]
