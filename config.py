@@ -5,13 +5,13 @@
 # For Paper Trading, use the keys from the exchange's Testnet website.
 API_KEYS = {
     'Binance': {
-        'apiKey': 'YOUR_BINANCE_API_KEY', # Use Testnet keys for paper trading
-        'secret': 'YOUR_BINANCE_SECRET_KEY',
+        'apiKey': 'FaTbl8MDJC1QvBw8oMphtqeReo3IUP5bZ2QKZoVYilAGvbu8m9fOqShLE52vWzfr', # Use Testnet keys for paper trading
+        'secret': 'QRF3tIkMFP2ez5OY5xiWNTzTirGJT3HkoAeoBSXuyniTqYRtNIcinXAgSs6eABVK',
     },
     'OKX': {
-        'apiKey': 'YOUR_OKX_API_KEY', # Use Testnet keys for paper trading
-        'secret': 'YOUR_OKX_SECRET_KEY',
-        'password': 'YOUR_OKX_API_PASSPHRASE',
+        'apiKey': '72daa7b0-d4f5-4455-8ccc-cf9822cbf726', # Use Testnet keys for paper trading
+        'secret': '47902A8B6064A13700DE61305DCA5BF2',
+        'password': 'Souadwanna1@',
     },
 }
 
