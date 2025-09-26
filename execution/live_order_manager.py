@@ -33,7 +33,7 @@ class LiveOrderManager:
                 await instance.load_markets(reload=True)
                 self.exchanges[name] = instance
                 self.logger.info(f"Successfully connected and synced with: {name}")
-                symbol_to_trade = 'BTC/USDC'
+                symbol_to_trade = 'BTC/USDT'
                 if symbol_to_trade in instance.markets:
                     market = instance.markets[symbol_to_trade]
                     self.fees[name] = {'maker': market['maker'] * 100, 'taker': market['taker'] * 100}

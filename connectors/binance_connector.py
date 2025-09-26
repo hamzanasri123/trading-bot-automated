@@ -5,7 +5,7 @@ import websockets
 class BinanceConnector:
     def __init__(self, data_engine):
         self.name = "Binance"
-        self.symbol = "btcusdc"
+        self.symbol = "btcusdt"
         self.ws_url = f"wss://stream.binance.com:9443/ws/{self.symbol}@depth@100ms"
         self.logger = logging.getLogger(self.__class__.__name__)
         self.data_engine = data_engine
@@ -15,14 +15,14 @@ class BinanceConnector:
         while True:
             try:
                 async with websockets.connect(self.ws_url) as ws:
-                    self.logger.info(f"Successfully connected to BTC/USDC on {self.name}.")
+                    self.logger.info(f"Successfully connected to BTC/USDT on {self.name}.")
                     while True:
                         data = await ws.recv()
                         # --- CORRECTION APPLIQUÉE ICI ---
                         # On passe un seul dictionnaire, comme attendu par DataEngine
                         update_data = {
                             "platform": self.name,
-                            "symbol": "BTC/USDC",
+                            "symbol": "BTC/USDT",
                             "data": json.loads(data)
                         }
                         self.data_engine.process_update(update_data)
