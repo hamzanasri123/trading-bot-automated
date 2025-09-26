@@ -6,7 +6,7 @@ class OkxConnector:
     def __init__(self, data_engine):
         self.name = "OKX"
         self.symbol = "BTC-USDT"
-        self.ws_url = "wss://wspap.okx.com:8443/ws/v5/public?brokerId=9999" # Paper Trading URL
+        self.ws_url = "wss://wspap.okx.com:8443/ws/v5/public?brokerId=9999"
         self.logger = logging.getLogger(self.__class__.__name__)
         self.data_engine = data_engine
 
@@ -17,17 +17,21 @@ class OkxConnector:
             try:
                 async with websockets.connect(self.ws_url) as ws:
                     await ws.send(json.dumps(subscribe_msg))
-                    
-                    # Attendre la confirmation d'abonnement
                     confirmation = await ws.recv()
                     if '"event":"subscribe"' in confirmation:
                         self.logger.info(f"Subscribed to order book for {self.symbol} on {self.name}.")
-                    
                     while True:
                         data = await ws.recv()
                         if 'data' in data:
                             payload = json.loads(data)['data'][0]
-                            self.data_engine.process_update(self.name, "BTC/USDT", payload)
+                            # --- CORRECTION APPLIQUÉE ICI ---
+                            # On passe un seul dictionnaire, comme attendu par DataEngine
+                            update_data = {
+                                "platform": self.name,
+                                "symbol": "BTC/USDT",
+                                "data": payload
+                            }
+                            self.data_engine.process_update(update_data)
             except (websockets.exceptions.ConnectionClosedError, ConnectionRefusedError) as e:
                 self.logger.error(f"Connection lost to {self.name} (type: {type(e).__name__}). Reconnecting in 5s...")
                 await asyncio.sleep(5)

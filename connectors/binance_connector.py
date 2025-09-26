@@ -18,7 +18,14 @@ class BinanceConnector:
                     self.logger.info(f"Successfully connected to BTC/USDT on {self.name}.")
                     while True:
                         data = await ws.recv()
-                        self.data_engine.process_update(self.name, "BTC/USDT", json.loads(data))
+                        # --- CORRECTION APPLIQUÉE ICI ---
+                        # On passe un seul dictionnaire, comme attendu par DataEngine
+                        update_data = {
+                            "platform": self.name,
+                            "symbol": "BTC/USDT",
+                            "data": json.loads(data)
+                        }
+                        self.data_engine.process_update(update_data)
             except (websockets.exceptions.ConnectionClosedError, ConnectionRefusedError) as e:
                 self.logger.error(f"Connection lost to {self.name} (type: {type(e).__name__}). Reconnecting in 5s...")
                 await asyncio.sleep(5)
