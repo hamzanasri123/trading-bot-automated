@@ -1,13 +1,13 @@
 # main.py
 import asyncio, logging, signal
-# --- MODIFICATION : Importer les variables de configuration ---
-from config import PAPER_TRADING_MODE, TELEGRAM_TOKEN, TELEGRAM_CHAT_ID
+from config import PAPER_TRADING_MODE, TELEGRAM_TOKEN, TELEGRAM_CHAT_ID, API_KEYS
 from execution.live_order_manager import LiveOrderManager
 from engine.data_engine import DataEngine
 from engine.strategy_engine import StrategyEngine
 from connectors.binance_connector import BinanceConnector
 from connectors.okx_connector import OkxConnector
 from utils.notifier import Notifier
+from utils.trade_logger import TradeLogger
 
 # Configuration du logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)-20s - %(levelname)-8s - %(message)s')
@@ -15,16 +15,16 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)-20s - %(le
 async def main_bot():
     shutdown_event = asyncio.Event()
     
-    # --- MODIFICATION : Passer les arguments au Notifier ---
     # Initialisation des composants
     notifier = Notifier(token=TELEGRAM_TOKEN, chat_id=TELEGRAM_CHAT_ID)
+    trade_logger = TradeLogger()
     
     if PAPER_TRADING_MODE:
         logging.info("Trading Mode: PAPER TRADING (Testnet)")
-        order_manager = LiveOrderManager(notifier)
+        order_manager = LiveOrderManager(notifier, trade_logger)
     else:
         logging.info("Trading Mode: LIVE TRADING")
-        order_manager = LiveOrderManager(notifier)
+        order_manager = LiveOrderManager(notifier, trade_logger)
     
     await order_manager.initialize()
 
@@ -39,15 +39,17 @@ async def main_bot():
     data_engine = DataEngine()
     strategy_engine = StrategyEngine(data_engine.order_books, order_manager, notifier)
 
-    # Création des connecteurs
-    binance_connector = BinanceConnector('Binance', 'BTC/USDT', data_engine.process_update)
-    okx_connector = OkxConnector('OKX', 'BTC-USDT', data_engine.process_update)
+    # --- MODIFICATION : Création des connecteurs corrigée ---
+    # On passe la fonction de callback au moment de l'appel à `run`, pas à l'initialisation.
+    binance_connector = BinanceConnector()
+    okx_connector = OkxConnector()
 
     # Lancement des tâches
     logging.info("Starting all arbitrage bot tasks...")
     tasks = [
-        asyncio.create_task(binance_connector.run()),
-        asyncio.create_task(okx_connector.run()),
+        # --- MODIFICATION : On passe la fonction ici ---
+        asyncio.create_task(binance_connector.run(data_engine.process_update)),
+        asyncio.create_task(okx_connector.run(data_engine.process_update)),
         asyncio.create_task(data_engine.run()),
         asyncio.create_task(strategy_engine.run()),
         asyncio.create_task(notifier.run())
@@ -62,15 +64,13 @@ async def main_bot():
     try:
         loop.add_signal_handler(signal.SIGINT, handle_shutdown_signal)
         loop.add_signal_handler(signal.SIGTERM, handle_shutdown_signal)
-    except NotImplementedError: # Pour la compatibilité Windows
+    except NotImplementedError:
         pass
 
-    # Boucle principale de surveillance
     try:
         await shutdown_event.wait()
     finally:
         logging.info("Initiating shutdown procedure...")
-        # Ferme le pool de processus proprement
         strategy_engine.process_pool.shutdown(wait=True)
         logging.info("Process pool shut down.")
         
@@ -78,6 +78,7 @@ async def main_bot():
             task.cancel()
         await asyncio.gather(*tasks, return_exceptions=True)
         await order_manager.close_all()
+        trade_logger.close() # Fermer le logger de trade
         logging.info("All tasks have been cancelled and connections closed.")
 
 if __name__ == "__main__":
