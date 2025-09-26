@@ -1,5 +1,6 @@
 # connectors/okx_connector.py
 import asyncio, json, logging
+import websockets
 
 class OkxConnector:
     def __init__(self, data_engine):

@@ -7,7 +7,6 @@ from engine.strategy_engine import StrategyEngine
 from connectors.binance_connector import BinanceConnector
 from connectors.okx_connector import OkxConnector
 from utils.notifier import Notifier
-# --- CORRECTION DE L'IMPORTATION ---
 from utils.trade_logger import TradeLogger
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)-20s - %(levelname)-8s - %(message)s')
@@ -44,7 +43,8 @@ async def main_bot():
         asyncio.create_task(binance_connector.run()),
         asyncio.create_task(okx_connector.run()),
         asyncio.create_task(strategy_engine.run()),
-        asyncio.create_task(notifier.run())
+        # --- CORRECTION : La tâche du Notifier est supprimée ---
+        # asyncio.create_task(notifier.run()) 
     ]
 
     loop = asyncio.get_running_loop()
