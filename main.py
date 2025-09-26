@@ -35,15 +35,16 @@ async def main_bot():
     data_engine = DataEngine()
     strategy_engine = StrategyEngine(data_engine.order_books, order_manager, notifier)
 
-    # --- MODIFICATION DÉFINITIVE : Création des connecteurs corrigée ---
+    # --- CORRECTION DÉFINITIVE APPLIQUÉE ICI ---
+    # On passe le data_engine à l'initialisation, comme les connecteurs l'attendent.
     binance_connector = BinanceConnector(data_engine)
     okx_connector = OkxConnector(data_engine)
 
     logging.info("Starting all arbitrage bot tasks...")
     tasks = [
+        # On appelle simplement run() car le data_engine est déjà connu.
         asyncio.create_task(binance_connector.run()),
         asyncio.create_task(okx_connector.run()),
-        # Le DataEngine n'a plus besoin de sa propre tâche car il est appelé directement
         asyncio.create_task(strategy_engine.run()),
         asyncio.create_task(notifier.run())
     ]
