@@ -27,7 +27,7 @@ async def main_bot():
 
     logging.info("--- Initial Balance Check ---")
     for platform in order_manager.exchanges.keys():
-        for currency in ['USDT', 'BTC']:
+        for currency in ['USDC', 'BTC']:
             balance = await order_manager.get_balance(platform, currency)
             if balance is not None: logging.info(f"[{platform}] Available balance: {balance:.4f} {currency}")
     logging.info("-----------------------------")
