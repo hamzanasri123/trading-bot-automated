@@ -7,7 +7,8 @@ from engine.strategy_engine import StrategyEngine
 from connectors.binance_connector import BinanceConnector
 from connectors.okx_connector import OkxConnector
 from utils.notifier import Notifier
-from analysis.trade_logger import TradeLogger
+# --- CORRECTION DE L'IMPORTATION ---
+from utils.trade_logger import TradeLogger
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)-20s - %(levelname)-8s - %(message)s')
 
@@ -35,14 +36,11 @@ async def main_bot():
     data_engine = DataEngine()
     strategy_engine = StrategyEngine(data_engine.order_books, order_manager, notifier)
 
-    # --- CORRECTION DÉFINITIVE APPLIQUÉE ICI ---
-    # On passe le data_engine à l'initialisation, comme les connecteurs l'attendent.
     binance_connector = BinanceConnector(data_engine)
     okx_connector = OkxConnector(data_engine)
 
     logging.info("Starting all arbitrage bot tasks...")
     tasks = [
-        # On appelle simplement run() car le data_engine est déjà connu.
         asyncio.create_task(binance_connector.run()),
         asyncio.create_task(okx_connector.run()),
         asyncio.create_task(strategy_engine.run()),
