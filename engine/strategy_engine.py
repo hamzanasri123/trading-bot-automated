@@ -8,7 +8,7 @@ class StrategyEngine:
         self._order_manager = order_manager
         self.notifier = notifier
         self.logger = logging.getLogger(self.__class__.__name__)
-        self.taker_profit_threshold_pct = 0.05
+        self.taker_profit_threshold_pct = 0.001 #0.05
         self.maker_spread_threshold_pct = 0.0
         self._is_trading_enabled = True
         self._cooldown = 5
