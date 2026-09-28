@@ -211,7 +211,10 @@ class StrategyEngine:
             self.logger.error("Failed to place one or both Maker (Post-Only) orders. Cleaning up.")
             if buy_result and buy_result.get('id'): await self._order_manager.cancel_order(buy_platform, buy_result['id'], symbol)
             if sell_result and sell_result.get('id'): await self._order_manager.cancel_order(sell_platform, sell_result['id'], symbol)
-            self._is_trading_enabled = True
+            # Ne pas réactiver le trading immédiatement : sans cooldown, la boucle principale
+            # (tick toutes les 0.1s) retentait aussitôt, ce qui a fini par déclencher un
+            # rate-limit OKX (code 50013 "Systems are busy") en martelant l'exchange.
+            asyncio.create_task(self.cooldown_trading())
 
     async def maker_trade_monitoring_loop(self):
         self.logger.info("Starting Maker trade monitoring loop...")
