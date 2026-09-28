@@ -25,19 +25,16 @@ class LiveOrderManager:
                 instance = exchange_class(config)
 
                 # --- CORRECTION DÉFINITIVE APPLIQUÉE ICI ---
-                # Si on est en Paper Trading, on doit ajouter des options spécifiques
+                # Si on est en Paper Trading, on doit activer le mode sandbox de ccxt
                 if PAPER_TRADING_MODE:
                     self.logger.info(f"Paper Trading (Testnet) mode enabled for {name}.")
-                    if name == 'OKX':
-                        # Solution trouvée par vous ! Nécessaire pour le Paper Trading OKX.
-                        instance.options['x-simulated-trading'] = '1'
-                    
-                    # La méthode set_sandbox_mode est plus générale pour les autres plateformes
-                    if instance.has['test']:
+                    # ccxt utilise la clé 'sandbox' dans has (l'ancienne clé 'test' n'existe plus).
+                    # set_sandbox_mode gère lui-même les spécificités par exchange
+                    # (ex: header x-simulated-trading pour OKX).
+                    if instance.has.get('sandbox', False):
                         instance.set_sandbox_mode(True)
                     else:
-                        if name != 'OKX': # OKX est géré manuellement, on ne log que pour les autres
-                           self.logger.warning(f"Exchange {name} does not have a standard testnet via ccxt.set_sandbox_mode().")
+                        self.logger.warning(f"Exchange {name} does not have a standard testnet via ccxt.set_sandbox_mode().")
 
                 await instance.load_markets(reload=True)
                 self.exchanges[name] = instance
