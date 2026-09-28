@@ -86,6 +86,10 @@ class StrategyEngine:
         # agressif. Doit rester faible : les exchanges rejettent les ordres dont le prix
         # dévie trop du marché (ex: OKX renvoie sCode 51138 au-delà d'environ 0.5%).
         self._chase_slippage_pct = 0.001
+        # Tolérance avant de considérer qu'un ordre Maker a été "doublé" par le marché.
+        # Sans marge, le moindre tick de prix déclenche une annulation/repositionnement,
+        # ce qui empêche l'ordre de rester assez longtemps pour être rempli.
+        self._queue_jump_tolerance_pct = 0.005
         
         # --- NOUVEAUX ATTRIBUTS ---
         # Crée un pool de processus. Par défaut, il utilisera tous les cœurs disponibles.
@@ -227,10 +231,12 @@ class StrategyEngine:
         if not buy_book or not sell_book: return
         current_best_bid_buy_platform = float(buy_book.get_bids(1)[0][0]) if buy_book.get_bids(1) else 0
         current_best_ask_sell_platform = float(sell_book.get_asks(1)[0][0]) if sell_book.get_asks(1) else float('inf')
-        if current_best_bid_buy_platform > buy_leg['price']:
+        buy_tolerance = buy_leg['price'] * (self._queue_jump_tolerance_pct / 100)
+        sell_tolerance = sell_leg['price'] * (self._queue_jump_tolerance_pct / 100)
+        if current_best_bid_buy_platform > buy_leg['price'] + buy_tolerance:
             self.logger.info("Queue Jump: Market moved against our Buy Maker order. Repositioning...")
             await self.cancel_and_reset_maker_trade(); return
-        if current_best_ask_sell_platform < sell_leg['price']:
+        if current_best_ask_sell_platform < sell_leg['price'] - sell_tolerance:
             self.logger.info("Queue Jump: Market moved against our Sell Maker order. Repositioning...")
             await self.cancel_and_reset_maker_trade(); return
         buy_status_task = self._order_manager.fetch_order_status(buy_platform, buy_leg['id'], symbol)
