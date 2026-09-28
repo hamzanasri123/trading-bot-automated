@@ -74,7 +74,9 @@ class LiveOrderManager:
         buy_result, sell_result = await asyncio.gather(buy_order_task, sell_order_task, return_exceptions=True)
         buy_id = buy_result.get('id') if isinstance(buy_result, dict) else None
         sell_id = sell_result.get('id') if isinstance(sell_result, dict) else None
-        self.trade_logger.log_trade(event_type='TAKER_ATTEMPT', strategy_type='TAKER', symbol=symbol, volume=volume, buy_platform=platform_buy, sell_platform=platform_sell, buy_order_id=buy_id, sell_order_id=sell_id, status='ATTEMPTED')
+        # Les colonnes doivent correspondre à la table 'trades' créée par TradeLogger._init_db ;
+        # les champs sans colonne dédiée (IDs d'ordres) vont dans 'details'.
+        self.trade_logger.log_trade(event_type='TAKER_ATTEMPT', platform_buy=platform_buy, platform_sell=platform_sell, symbol=symbol, volume=volume, buy_price=max_buy_price, sell_price=min_sell_price, details=f"buy_order_id={buy_id}, sell_order_id={sell_id}")
 
     async def create_limit_order(self, platform: str, symbol: str, side: str, amount: float, price: float, post_only: bool = False):
         if platform not in self.exchanges:

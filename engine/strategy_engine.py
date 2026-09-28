@@ -70,10 +70,11 @@ def calculate_real_profit_sync(asks_to_buy, bids_to_sell, buy_fee_pct: float, se
 
 
 class StrategyEngine:
-    def __init__(self, order_books: dict, order_manager, notifier):
+    def __init__(self, order_books: dict, order_manager, notifier, trade_logger=None):
         self._order_books = order_books
         self._order_manager = order_manager
         self.notifier = notifier
+        self.trade_logger = trade_logger
         self.logger = logging.getLogger(self.__class__.__name__)
         self.taker_profit_threshold_pct = 0.05
         self.maker_spread_threshold_pct = 0.0
@@ -206,6 +207,8 @@ class StrategyEngine:
                 "buy_platform": buy_platform, "sell_platform": sell_platform, "symbol": symbol
             }
             self.logger.info(f"Active Maker trade created. Buy ID: {buy_result['id']}, Sell ID: {sell_result['id']}")
+            if self.trade_logger:
+                self.trade_logger.log_trade(event_type='MAKER_PLACED', platform_buy=buy_platform, platform_sell=sell_platform, symbol=symbol, volume=volume, buy_price=our_buy_price, sell_price=our_sell_price, details=f"buy_id={buy_result['id']}, sell_id={sell_result['id']}")
             asyncio.create_task(self.maker_trade_monitoring_loop())
         else:
             self.logger.error("Failed to place one or both Maker (Post-Only) orders. Cleaning up.")
@@ -246,7 +249,11 @@ class StrategyEngine:
         sell_status_task = self._order_manager.fetch_order_status(sell_platform, sell_leg['id'], symbol)
         buy_order, sell_order = await asyncio.gather(buy_status_task, sell_status_task)
         if buy_order and buy_order['status'] == 'closed' and sell_order and sell_order['status'] == 'closed':
-            self.logger.info("SUCCESS: Both Maker legs filled! Profit captured."); await self.notifier.send_message("✅ *Maker Arbitrage Success* ✅\nBoth passive orders were filled."); self.active_maker_trade = None; return
+            self.logger.info("SUCCESS: Both Maker legs filled! Profit captured.")
+            if self.trade_logger:
+                profit_usd = (sell_leg['price'] - buy_leg['price']) * buy_leg['amount']
+                self.trade_logger.log_trade(event_type='MAKER_FILLED', platform_buy=buy_platform, platform_sell=sell_platform, symbol=symbol, volume=buy_leg['amount'], buy_price=buy_leg['price'], sell_price=sell_leg['price'], profit_usd=profit_usd, details=f"buy_id={buy_leg['id']}, sell_id={sell_leg['id']}")
+            await self.notifier.send_message("✅ *Maker Arbitrage Success* ✅\nBoth passive orders were filled."); self.active_maker_trade = None; return
         if (buy_order and buy_order['status'] == 'closed') and (sell_order and sell_order['status'] == 'open'):
             self.logger.warning("Maker leg filled (Buy). Chasing the Sell leg.")
             await self.notifier.send_message("🏃‍♂️ *Chasing Maker Leg* 🏃‍♂️\nBuy order filled. Converting Sell order to Taker to complete trade.")
@@ -256,6 +263,11 @@ class StrategyEngine:
             if not chase_result or not chase_result.get('id'):
                 self.logger.error(f"UNHEDGED POSITION: failed to chase Sell leg on {sell_platform} after Buy leg filled on {buy_platform}. Manual intervention required.")
                 await self.notifier.send_message(f"🔥 *UNHEDGED POSITION* 🔥\nBuy leg filled on {buy_platform} but the Sell chase order failed on {sell_platform}. Manual intervention required.")
+                if self.trade_logger:
+                    self.trade_logger.log_trade(event_type='MAKER_UNHEDGED', platform_buy=buy_platform, platform_sell=sell_platform, symbol=symbol, volume=sell_leg['amount'], buy_price=buy_leg['price'], details=f"Buy leg filled but Sell chase order failed on {sell_platform}")
+            elif self.trade_logger:
+                profit_usd = (chase_price - buy_leg['price']) * sell_leg['amount']
+                self.trade_logger.log_trade(event_type='MAKER_CHASED_SELL', platform_buy=buy_platform, platform_sell=sell_platform, symbol=symbol, volume=sell_leg['amount'], buy_price=buy_leg['price'], sell_price=chase_price, profit_usd=profit_usd, details=f"buy_id={buy_leg['id']}, chase_sell_id={chase_result['id']}")
             self.active_maker_trade = None
             return
         if (sell_order and sell_order['status'] == 'closed') and (buy_order and buy_order['status'] == 'open'):
@@ -267,6 +279,11 @@ class StrategyEngine:
             if not chase_result or not chase_result.get('id'):
                 self.logger.error(f"UNHEDGED POSITION: failed to chase Buy leg on {buy_platform} after Sell leg filled on {sell_platform}. Manual intervention required.")
                 await self.notifier.send_message(f"🔥 *UNHEDGED POSITION* 🔥\nSell leg filled on {sell_platform} but the Buy chase order failed on {buy_platform}. Manual intervention required.")
+                if self.trade_logger:
+                    self.trade_logger.log_trade(event_type='MAKER_UNHEDGED', platform_buy=buy_platform, platform_sell=sell_platform, symbol=symbol, volume=buy_leg['amount'], sell_price=sell_leg['price'], details=f"Sell leg filled but Buy chase order failed on {buy_platform}")
+            elif self.trade_logger:
+                profit_usd = (sell_leg['price'] - chase_price) * buy_leg['amount']
+                self.trade_logger.log_trade(event_type='MAKER_CHASED_BUY', platform_buy=buy_platform, platform_sell=sell_platform, symbol=symbol, volume=buy_leg['amount'], buy_price=chase_price, sell_price=sell_leg['price'], profit_usd=profit_usd, details=f"chase_buy_id={chase_result['id']}, sell_id={sell_leg['id']}")
             self.active_maker_trade = None
             return
         if time.time() - trade_info['creation_time'] > 30:

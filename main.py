@@ -33,7 +33,7 @@ async def main_bot():
     logging.info("-----------------------------")
 
     data_engine = DataEngine()
-    strategy_engine = StrategyEngine(data_engine.order_books, order_manager, notifier)
+    strategy_engine = StrategyEngine(data_engine.order_books, order_manager, notifier, trade_logger)
 
     binance_connector = BinanceConnector(data_engine)
     okx_connector = OkxConnector(data_engine)
