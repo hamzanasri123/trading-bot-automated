@@ -66,8 +66,13 @@ class LiveOrderManager:
                 if PAPER_TRADING_MODE:
                     self.logger.info(f"Paper Trading (Testnet) mode enabled for {name}.")
                     if name == 'OKX':
-                        # Solution trouvée par vous ! Nécessaire pour le Paper Trading OKX.
+                        # Nécessaire pour le Demo Trading OKX : header spécial + hostname
+                        # dédié (confirmé par l'utilisateur pour son compte). Le hostname
+                        # doit être l'attribut ccxt `hostname`, pas `options['hostname']`
+                        # (celui-ci n'a aucun effet — ccxt résout {hostname} depuis
+                        # self.hostname, voir Exchange.implode_hostname).
                         instance.options['x-simulated-trading'] = '1'
+                        instance.hostname = 'eea.okx.com'
                     
                     # La méthode set_sandbox_mode est plus générale pour les autres plateformes
                     if instance.has['test']:

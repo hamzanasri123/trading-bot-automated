@@ -10,11 +10,13 @@ class BinanceConnector:
         
         # --- CORRECTION : URL DYNAMIQUE ---
         if PAPER_TRADING_MODE:
-            # URL du Testnet de Binance
-            base_url = "wss://stream.binance.com:9443/ws"
+            # URL du Testnet de Binance (les données de marché testnet diffèrent
+            # de la prod — utiliser le flux prod en paper trading donnerait des
+            # prix qui ne correspondent pas aux ordres réellement testés)
+            base_url = "wss://stream.testnet.binance.vision:9443/ws"
         else:
             # URL de Production de Binance
-            base_url = "wss://stream.binance.com:9443/ws" # (Binance utilise la même pour le spot)
+            base_url = "wss://stream.binance.com:9443/ws"
         
         self.ws_url = f"{base_url}/{self.symbol_ws}@depth@100ms"
         self.logger = logging.getLogger(self.__class__.__name__)

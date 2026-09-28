@@ -10,8 +10,8 @@ class OkxConnector:
         
         # --- CORRECTION : URL DYNAMIQUE ---
         if PAPER_TRADING_MODE:
-            # URL du Paper Trading (Démo) de OKX
-            self.ws_url = "wss://wspap.okx.com:8443/ws/v5/public?brokerId=9999"
+            # URL du Demo Trading OKX (confirmée par l'utilisateur pour son compte)
+            self.ws_url = "wss://wseeapap.okx.com:8443/ws/v5/public"
             self.mode_log = "(Paper Trading)"
         else:
             # URL de Production (Réelle) de OKX
