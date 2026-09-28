@@ -361,3 +361,59 @@ async def test_flatten_failure_sends_critical_alert_and_trips_kill_switch():
     assert manager._consecutive_leg_risk_events == config.MAX_CONSECUTIVE_LEG_RISK_EVENTS
     assert manager.trading_halted is True
     assert any("KILL SWITCH TRIGGERED" in m for m in messages)
+
+
+# --- Low-balance proactive alert --------------------------------------------
+
+async def test_warn_if_low_skips_when_balance_sufficient():
+    manager, notifier, _ = make_manager()
+    loop = asyncio.get_running_loop()
+    await manager._warn_if_low('Binance', 'USDC', 100.0, threshold=15.0, loop=loop)
+    notifier.send_message.assert_not_called()
+
+
+async def test_warn_if_low_alerts_once_then_respects_cooldown():
+    manager, notifier, _ = make_manager()
+    loop = asyncio.get_running_loop()
+    await manager._warn_if_low('Binance', 'USDC', 1.0, threshold=15.0, loop=loop)
+    await manager._warn_if_low('Binance', 'USDC', 1.0, threshold=15.0, loop=loop)
+    assert notifier.send_message.await_count == 1
+    assert any("LOW BALANCE" in m for m in sent_messages(notifier))
+
+
+async def test_warn_if_low_alerts_independently_per_currency():
+    manager, notifier, _ = make_manager()
+    loop = asyncio.get_running_loop()
+    await manager._warn_if_low('Binance', 'USDC', 1.0, threshold=15.0, loop=loop)
+    await manager._warn_if_low('Binance', 'BTC', 0.0001, threshold=config.MIN_BASE_CURRENCY_BALANCE, loop=loop)
+    assert notifier.send_message.await_count == 2
+
+
+async def test_monitor_balances_warns_on_low_balance_and_respects_cooldown(monkeypatch):
+    manager, notifier, _ = make_manager()
+    binance = make_exchange(free_balance={'USDC': 1.0, 'BTC': 0.0001})
+    manager.exchanges = {'Binance': binance}
+    monkeypatch.setattr(live_order_manager, 'BALANCE_CHECK_INTERVAL_S', 0.01)
+
+    task = asyncio.create_task(manager.monitor_balances('BTC/USDC'))
+    await asyncio.sleep(0.06)  # let several loop iterations run
+    task.cancel()
+    await asyncio.gather(task, return_exceptions=True)
+
+    low_balance_msgs = [m for m in sent_messages(notifier) if "LOW BALANCE" in m]
+    # USDC and BTC are both low but the cooldown must stop it from re-alerting every loop tick.
+    assert len(low_balance_msgs) == 2
+
+
+async def test_monitor_balances_stays_silent_when_balances_are_healthy(monkeypatch):
+    manager, notifier, _ = make_manager()
+    binance = make_exchange(free_balance={'USDC': 1_000_000.0, 'BTC': 1_000.0})
+    manager.exchanges = {'Binance': binance}
+    monkeypatch.setattr(live_order_manager, 'BALANCE_CHECK_INTERVAL_S', 0.01)
+
+    task = asyncio.create_task(manager.monitor_balances('BTC/USDC'))
+    await asyncio.sleep(0.05)
+    task.cancel()
+    await asyncio.gather(task, return_exceptions=True)
+
+    notifier.send_message.assert_not_called()

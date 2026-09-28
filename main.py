@@ -54,6 +54,7 @@ async def main_bot():
         asyncio.create_task(okx_connector.run()),
         asyncio.create_task(strategy_engine.run()),
         asyncio.create_task(heartbeat.run()),
+        asyncio.create_task(order_manager.monitor_balances('BTC/USDC')),
     ]
 
     loop = asyncio.get_running_loop()

@@ -200,9 +200,16 @@ class StrategyEngine:
         if our_buy_price >= our_sell_price:
             self.logger.info(f"Maker prices crossed or invalid. Buy: {our_buy_price}, Sell: {our_sell_price}. Aborting.")
             return
+
+        volume = MAX_TRADE_SIZE_USD / our_buy_price
+        notional_usd = volume * our_buy_price
+        if await self._order_manager.reject_if_over_cap(notional_usd, context='MAKER'):
+            return
+        if not await self._order_manager.check_sufficient_balance(buy_platform, sell_platform, symbol, volume, our_buy_price):
+            return
+
         self.logger.info("--- Triggering MAKER orders (Post-Only) ---")
         self._is_trading_enabled = False
-        volume = MAX_TRADE_SIZE_USD / our_buy_price
         buy_order_task = asyncio.create_task(self._order_manager.create_limit_order(buy_platform, symbol, 'buy', volume, our_buy_price, post_only=True))
         sell_order_task = asyncio.create_task(self._order_manager.create_limit_order(sell_platform, symbol, 'sell', volume, our_sell_price, post_only=True))
         buy_result, sell_result = await asyncio.gather(buy_order_task, sell_order_task)
@@ -236,14 +243,22 @@ class StrategyEngine:
         buy_book = self._order_books.get((buy_platform, symbol))
         sell_book = self._order_books.get((sell_platform, symbol))
         if not buy_book or not sell_book: return
-        current_best_bid_buy_platform = float(buy_book.get_bids(1)[0][0]) if buy_book.get_bids(1) else 0
-        current_best_ask_sell_platform = float(sell_book.get_asks(1)[0][0]) if sell_book.get_asks(1) else float('inf')
-        if current_best_bid_buy_platform > buy_leg['price']:
-            self.logger.info("Queue Jump: Market moved against our Buy Maker order. Repositioning...")
-            await self.cancel_and_reset_maker_trade(); return
-        if current_best_ask_sell_platform < sell_leg['price']:
-            self.logger.info("Queue Jump: Market moved against our Sell Maker order. Repositioning...")
-            await self.cancel_and_reset_maker_trade(); return
+
+        if buy_book.is_stale(self.order_book_max_age_s) or sell_book.is_stale(self.order_book_max_age_s):
+            now = time.time()
+            if now - self._last_staleness_warning > self._staleness_warning_interval:
+                self.logger.warning(f"Stale order book data while monitoring Maker trade for {buy_platform}/{sell_platform} {symbol} — skipping queue-jump repositioning this cycle (order status is still checked).")
+                self._last_staleness_warning = now
+        else:
+            current_best_bid_buy_platform = float(buy_book.get_bids(1)[0][0]) if buy_book.get_bids(1) else 0
+            current_best_ask_sell_platform = float(sell_book.get_asks(1)[0][0]) if sell_book.get_asks(1) else float('inf')
+            if current_best_bid_buy_platform > buy_leg['price']:
+                self.logger.info("Queue Jump: Market moved against our Buy Maker order. Repositioning...")
+                await self.cancel_and_reset_maker_trade(); return
+            if current_best_ask_sell_platform < sell_leg['price']:
+                self.logger.info("Queue Jump: Market moved against our Sell Maker order. Repositioning...")
+                await self.cancel_and_reset_maker_trade(); return
+
         buy_status_task = self._order_manager.fetch_order_status(buy_platform, buy_leg['id'], symbol)
         sell_status_task = self._order_manager.fetch_order_status(sell_platform, sell_leg['id'], symbol)
         buy_order, sell_order = await asyncio.gather(buy_status_task, sell_status_task)

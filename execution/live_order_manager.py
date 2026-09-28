@@ -4,7 +4,10 @@ import ccxt.async_support as ccxt
 from config import (
     API_KEYS, PAPER_TRADING_MODE, MAX_TRADE_SIZE_USD,
     MAX_DAILY_LOSS_USD, MAX_CONSECUTIVE_LEG_RISK_EVENTS,
+    MIN_BASE_CURRENCY_BALANCE, LOW_BALANCE_WARNING_COOLDOWN_S,
 )
+
+BALANCE_CHECK_INTERVAL_S = 60.0
 
 # Rough slippage+fees penalty (in fraction of notional) applied when a leg is
 # emergency-flattened at market. We don't know the exact fill price ahead of
@@ -41,6 +44,9 @@ class LiveOrderManager:
         self._daily_pnl_usd = 0.0
         self._daily_pnl_date = datetime.date.today()
         self._consecutive_leg_risk_events = 0
+
+        # --- Low-balance alerting state (platform, currency) -> last warned monotonic time ---
+        self._low_balance_last_warned = {}
 
     async def initialize(self):
         self.logger.info("Initializing LiveOrderManager...")
@@ -94,6 +100,42 @@ class LiveOrderManager:
             return balance.get(currency, 0.0)
         except Exception as e:
             self.logger.error(f"Error fetching balance for {currency} on {platform}: {e}"); return None
+
+    async def _warn_if_low(self, platform: str, currency: str, balance: float, threshold: float, loop):
+        if balance >= threshold:
+            return
+        key = (platform, currency)
+        # loop.time() is a monotonic clock with no fixed epoch (often
+        # system-uptime-based) — a 0.0 sentinel for "never warned" would
+        # wrongly suppress the very first alert on a freshly started
+        # process/container where loop.time() itself is still small.
+        last_warned = self._low_balance_last_warned.get(key, float('-inf'))
+        if loop.time() - last_warned < LOW_BALANCE_WARNING_COOLDOWN_S:
+            return  # already warned about this recently, don't spam
+        self._low_balance_last_warned[key] = loop.time()
+        self.logger.warning(f"LOW BALANCE: {platform} has only {balance:.6f} {currency} (below {threshold:.6f}).")
+        await self.notifier.send_message(
+            f"💸 *LOW BALANCE* 💸\n{platform}: {balance:.6f} {currency} — below the {threshold:.6f} needed to keep trading this pair.\n"
+            f"This bot does not rebalance automatically — a manual transfer/rebalance may be needed."
+        )
+
+    async def monitor_balances(self, symbol: str):
+        """Background loop: periodically checks balances on every configured
+        exchange and proactively alerts (rate-limited) when one drops below
+        what's needed for another trade, instead of trades just silently
+        failing the pre-trade balance check with no one aware why."""
+        base_currency, quote_currency = symbol.split('/')
+        loop = asyncio.get_running_loop()
+        while True:
+            await asyncio.sleep(BALANCE_CHECK_INTERVAL_S)
+            for platform in list(self.exchanges.keys()):
+                quote_balance = await self.get_balance(platform, quote_currency)
+                if quote_balance is not None:
+                    await self._warn_if_low(platform, quote_currency, quote_balance, MAX_TRADE_SIZE_USD, loop)
+
+                base_balance = await self.get_balance(platform, base_currency)
+                if base_balance is not None:
+                    await self._warn_if_low(platform, base_currency, base_balance, MIN_BASE_CURRENCY_BALANCE, loop)
 
     def _reset_daily_pnl_if_needed(self):
         today = datetime.date.today()
@@ -180,7 +222,22 @@ class LiveOrderManager:
 
         return {'order_id': order_id, 'filled': filled, 'status': order_status}
 
-    async def _check_sufficient_balance(self, platform_buy: str, platform_sell: str, symbol: str, volume: float, max_buy_price: float) -> bool:
+    def exceeds_hard_cap(self, notional_usd: float) -> tuple:
+        """Shared defense-in-depth check, used by both the taker and maker
+        paths: an order's notional value must never exceed MAX_TRADE_SIZE_USD
+        by more than a small tolerance, regardless of what sized it."""
+        hard_cap = MAX_TRADE_SIZE_USD * (1 + HARD_CAP_TOLERANCE_PCT / 100)
+        return notional_usd > hard_cap, hard_cap
+
+    async def reject_if_over_cap(self, notional_usd: float, context: str) -> bool:
+        """Returns True (and alerts) if the order must be refused."""
+        over_cap, hard_cap = self.exceeds_hard_cap(notional_usd)
+        if over_cap:
+            self.logger.critical(f"ORDER REJECTED ({context}): requested notional {notional_usd:.2f} USD exceeds the hard cap of {hard_cap:.2f} USD (MAX_TRADE_SIZE_USD={MAX_TRADE_SIZE_USD}). This should never happen — refusing to trade.")
+            await self.notifier.send_message(f"🛑 *ORDER REJECTED* 🛑\n[{context}] Requested notional {notional_usd:.2f} USD exceeds the configured cap of {MAX_TRADE_SIZE_USD} USD. Refusing to trade — check strategy sizing logic.")
+        return over_cap
+
+    async def check_sufficient_balance(self, platform_buy: str, platform_sell: str, symbol: str, volume: float, max_buy_price: float) -> bool:
         base_currency, quote_currency = symbol.split('/')
         quote_balance, base_balance = await asyncio.gather(
             self.get_balance(platform_buy, quote_currency),
@@ -208,13 +265,10 @@ class LiveOrderManager:
             return
 
         notional_usd = volume * max(max_buy_price, min_sell_price)
-        hard_cap = MAX_TRADE_SIZE_USD * (1 + HARD_CAP_TOLERANCE_PCT / 100)
-        if notional_usd > hard_cap:
-            self.logger.critical(f"ORDER REJECTED: requested notional {notional_usd:.2f} USD exceeds the hard cap of {hard_cap:.2f} USD (MAX_TRADE_SIZE_USD={MAX_TRADE_SIZE_USD}). This should never happen — refusing to trade.")
-            await self.notifier.send_message(f"🛑 *ORDER REJECTED* 🛑\nRequested notional {notional_usd:.2f} USD exceeds the configured cap of {MAX_TRADE_SIZE_USD} USD. Refusing to trade — check strategy sizing logic.")
+        if await self.reject_if_over_cap(notional_usd, context='TAKER'):
             return
 
-        if not await self._check_sufficient_balance(platform_buy, platform_sell, symbol, volume, max_buy_price):
+        if not await self.check_sufficient_balance(platform_buy, platform_sell, symbol, volume, max_buy_price):
             return
 
         buy_leg, sell_leg = await asyncio.gather(

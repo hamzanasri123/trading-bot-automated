@@ -39,6 +39,14 @@ MAX_DAILY_LOSS_USD = 50.0
 # conditions rather than normal slippage.
 MAX_CONSECUTIVE_LEG_RISK_EVENTS = 2
 
+# The bot does NOT rebalance inventory between exchanges automatically —
+# that's a treasury decision, not something it should do on its own. These
+# only make it proactively warn (via Telegram) when a balance drops low
+# enough that trades will start silently failing the pre-trade balance
+# check, instead of the operator finding out only when trading quietly stops.
+MIN_BASE_CURRENCY_BALANCE = 0.0005  # e.g. BTC on a BTC/USDC pair — tune per symbol
+LOW_BALANCE_WARNING_COOLDOWN_S = 6 * 3600  # don't re-alert on the same low balance more than once per 6h
+
 
 def validate_config():
     """Sanity-check the risk/trading configuration. Returns a list of human
