@@ -4,3 +4,4 @@ ccxt[async,okx]
 httpx
 requests
 pandas
+python-dotenv

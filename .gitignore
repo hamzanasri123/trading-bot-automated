@@ -5,3 +5,6 @@ __pycache__/
 venv/
 logs/
 *.db
+
+# Real secrets live here — never commit this file. Copy .env.example instead.
+.env

@@ -40,7 +40,7 @@ def test_rejects_no_exchanges_configured(monkeypatch):
         'OKX': {'apiKey': 'YOUR_OKX_API_KEY', 'secret': '', 'password': ''},
     })
     errors = config.validate_config()
-    assert any("nothing to trade on" in e for e in errors)
+    assert any("No exchange has API keys configured" in e for e in errors)
 
 
 def test_rejects_only_one_exchange_configured(monkeypatch):
@@ -58,4 +58,4 @@ def test_rejects_okx_missing_password(monkeypatch):
         'OKX': {'apiKey': 'real-okx-key', 'secret': 'real-secret', 'password': ''},
     })
     errors = config.validate_config()
-    assert any("password" in e for e in errors)
+    assert any("OKX_API_PASSPHRASE" in e for e in errors)
