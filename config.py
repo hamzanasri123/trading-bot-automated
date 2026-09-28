@@ -17,6 +17,9 @@ API_KEYS = {
         'apiKey': os.environ.get('OKX_API_KEY', ''),
         'secret': os.environ.get('OKX_API_SECRET', ''),
         'password': os.environ.get('OKX_API_PASSWORD', ''),
+        # Set to 'eea.okx.com' for OKX EEA-regulated accounts (their API keys
+        # only work against that domain, not www.okx.com). Leave unset otherwise.
+        'hostname': os.environ.get('OKX_HOSTNAME', ''),
     },
 }
 

@@ -19,7 +19,13 @@ class LiveOrderManager:
             try:
                 # Configuration de base
                 config = {'apiKey': keys['apiKey'], 'secret': keys['secret'], 'enableRateLimit': True}
-                if name == 'OKX': config['password'] = keys['password']
+                if name == 'OKX':
+                    config['password'] = keys['password']
+                    # Les comptes OKX régulés EEA (Europe) ont des clés API séparées de
+                    # www.okx.com et doivent utiliser le domaine eea.okx.com. Sans ce
+                    # réglage, une clé EEA renvoie "API key doesn't exist" (code 50119).
+                    if keys.get('hostname'):
+                        config['hostname'] = keys['hostname']
                 
                 exchange_class = getattr(ccxt, name.lower())
                 instance = exchange_class(config)
