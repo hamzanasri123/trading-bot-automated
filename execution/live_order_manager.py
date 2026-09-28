@@ -59,6 +59,13 @@ class LiveOrderManager:
     def get_fees(self, platform: str) -> dict:
         return self.fees.get(platform, {'maker': 0.1, 'taker': 0.1})
 
+    def round_amount(self, platform: str, symbol: str, amount: float) -> float:
+        if platform not in self.exchanges: return amount
+        try:
+            return float(self.exchanges[platform].amount_to_precision(symbol, amount))
+        except Exception:
+            return amount
+
     async def get_balance(self, platform: str, currency: str):
         if platform not in self.exchanges: return None
         try:

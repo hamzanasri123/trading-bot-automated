@@ -1,35 +1,44 @@
 # connectors/binance_connector.py
 import asyncio, json, logging, websockets
-from config import PAPER_TRADING_MODE
 
 class BinanceConnector:
-    def __init__(self, data_engine):
+    def __init__(self, data_engine, symbols=None):
         self.name = "Binance"
-        self.symbol_unified = "BTC/USDC"
-        self.symbol_ws = self.symbol_unified.replace('/', '').lower()
-        
-        # --- CORRECTION : URL DYNAMIQUE ---
-        if PAPER_TRADING_MODE:
-            # URL du Testnet de Binance
-            base_url = "wss://stream.binance.com:9443/ws"
+        self.symbols_unified = symbols or ["BTC/USDC"]
+        self.stream_names = [s.replace('/', '').lower() + '@depth@100ms' for s in self.symbols_unified]
+        self.ws_symbol_map = {name.split('@')[0]: sym for name, sym in zip(self.stream_names, self.symbols_unified)}
+
+        base_url = "wss://stream.binance.com:9443"
+        if len(self.stream_names) == 1:
+            self.ws_url = f"{base_url}/ws/{self.stream_names[0]}"
+            self.combined = False
         else:
-            # URL de Production de Binance
-            base_url = "wss://stream.binance.com:9443/ws" # (Binance utilise la même pour le spot)
-        
-        self.ws_url = f"{base_url}/{self.symbol_ws}@depth@100ms"
+            self.ws_url = f"{base_url}/stream?streams=" + "/".join(self.stream_names)
+            self.combined = True
+
         self.logger = logging.getLogger(self.__class__.__name__)
         self.data_engine = data_engine
 
     async def run(self):
-        # ... (le reste du fichier ne change pas)
         self.logger.info(f"Connecting to {self.name} data stream: {self.ws_url}")
         while True:
             try:
                 async with websockets.connect(self.ws_url) as ws:
-                    self.logger.info(f"Successfully connected to {self.symbol_unified} on {self.name}.")
+                    self.logger.info(f"Successfully connected to {', '.join(self.symbols_unified)} on {self.name}.")
                     while True:
-                        data = await ws.recv()
-                        update_data = {"platform": self.name, "symbol": self.symbol_unified, "data": json.loads(data)}
+                        raw = await ws.recv()
+                        msg = json.loads(raw)
+                        if self.combined:
+                            stream_name = msg.get('stream', '')
+                            payload = msg.get('data', {})
+                            ws_symbol = stream_name.split('@')[0]
+                        else:
+                            payload = msg
+                            ws_symbol = self.stream_names[0].split('@')[0]
+                        symbol_unified = self.ws_symbol_map.get(ws_symbol)
+                        if not symbol_unified:
+                            continue
+                        update_data = {"platform": self.name, "symbol": symbol_unified, "data": payload}
                         self.data_engine.process_update(update_data)
             except (websockets.exceptions.ConnectionClosedError, ConnectionRefusedError) as e:
                 self.logger.error(f"Connection lost to {self.name} (type: {type(e).__name__}). Reconnecting in 5s...")
