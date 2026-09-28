@@ -1,29 +1,34 @@
 # config.py
+import os
+from dotenv import load_dotenv
+
+load_dotenv()
 
 # --- EXCHANGE API KEYS ---
-# IMPORTANT: Replace with your REAL production keys for live trading.
+# Keys are read from environment variables (.env locally, real env vars in
+# deployment) so secrets are never committed to the repository.
 # For Paper Trading, use the keys from the exchange's Testnet website.
 API_KEYS = {
     'Binance': {
-        'apiKey': 'FaTbl8MDJC1QvBw8oMphtqeReo3IUP5bZ2QKZoVYilAGvbu8m9fOqShLE52vWzfr', # Use Testnet keys for paper trading
-        'secret': 'QRF3tIkMFP2ez5OY5xiWNTzTirGJT3HkoAeoBSXuyniTqYRtNIcinXAgSs6eABVK',
+        'apiKey': os.environ.get('BINANCE_API_KEY', ''),
+        'secret': os.environ.get('BINANCE_API_SECRET', ''),
     },
     'OKX': {
-        'apiKey': '72daa7b0-d4f5-4455-8ccc-cf9822cbf726', # Use Testnet keys for paper trading
-        'secret': '47902A8B6064A13700DE61305DCA5BF2',
-        'password': 'Souadwanna1@',
+        'apiKey': os.environ.get('OKX_API_KEY', ''),
+        'secret': os.environ.get('OKX_API_SECRET', ''),
+        'password': os.environ.get('OKX_API_PASSWORD', ''),
     },
 }
 
 # --- TRADING MODE ---
 # Set to True to run in testnet/paper trading mode.
 # Set to False to run in live mode with real funds.
-PAPER_TRADING_MODE = False # Set to False for cloud deployment
+PAPER_TRADING_MODE = True
 
 # --- TELEGRAM NOTIFICATIONS ---
-# Get these from @BotFather and @userinfobot on Telegram. Set to '' to disable.
-TELEGRAM_TOKEN = '8333658619:AAHtpa0YxjWdVwMSCK8kbnNePvCXzTg9djI'
-TELEGRAM_CHAT_ID = '5763218219'
+# Get these from @BotFather and @userinfobot on Telegram. Leave unset to disable.
+TELEGRAM_TOKEN = os.environ.get('TELEGRAM_TOKEN', '')
+TELEGRAM_CHAT_ID = os.environ.get('TELEGRAM_CHAT_ID', '')
 
 # --- SAFETY & RISK MANAGEMENT ---
 # Maximum size in USD for a single arbitrage trade. This is your most important risk control.

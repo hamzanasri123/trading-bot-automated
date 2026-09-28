@@ -3,6 +3,8 @@ services:
     build: .
     container_name: trading-bot-automated-trading-bot-1
     restart: unless-stopped
+    env_file:
+      - .env
     # --- NOUVELLE SECTION AJOUTÉE ICI ---
     volumes:
       # Syntaxe: [dossier sur la machine hôte]:[dossier dans le conteneur]
