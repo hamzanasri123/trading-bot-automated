@@ -82,6 +82,10 @@ class StrategyEngine:
         self._last_print_time = 0
         self._print_interval = 10
         self.active_maker_trade = None
+        # Décalage appliqué au prix pour convertir la jambe restante en ordre "taker"
+        # agressif. Doit rester faible : les exchanges rejettent les ordres dont le prix
+        # dévie trop du marché (ex: OKX renvoie sCode 51138 au-delà d'environ 0.5%).
+        self._chase_slippage_pct = 0.001
         
         # --- NOUVEAUX ATTRIBUTS ---
         # Crée un pool de processus. Par défaut, il utilisera tous les cœurs disponibles.
@@ -235,9 +239,27 @@ class StrategyEngine:
         if buy_order and buy_order['status'] == 'closed' and sell_order and sell_order['status'] == 'closed':
             self.logger.info("SUCCESS: Both Maker legs filled! Profit captured."); await self.notifier.send_message("✅ *Maker Arbitrage Success* ✅\nBoth passive orders were filled."); self.active_maker_trade = None; return
         if (buy_order and buy_order['status'] == 'closed') and (sell_order and sell_order['status'] == 'open'):
-            self.logger.warning("Maker leg filled (Buy). Chasing the Sell leg."); await self.notifier.send_message("🏃‍♂️ *Chasing Maker Leg* 🏃‍♂️\nBuy order filled. Converting Sell order to Taker to complete trade."); await self._order_manager.cancel_order(sell_platform, sell_leg['id'], symbol); await self._order_manager.create_limit_order(sell_platform, symbol, 'sell', sell_leg['amount'], sell_order['price'] * 0.99); self.active_maker_trade = None; return
+            self.logger.warning("Maker leg filled (Buy). Chasing the Sell leg.")
+            await self.notifier.send_message("🏃‍♂️ *Chasing Maker Leg* 🏃‍♂️\nBuy order filled. Converting Sell order to Taker to complete trade.")
+            await self._order_manager.cancel_order(sell_platform, sell_leg['id'], symbol)
+            chase_price = sell_order['price'] * (1 - self._chase_slippage_pct)
+            chase_result = await self._order_manager.create_limit_order(sell_platform, symbol, 'sell', sell_leg['amount'], chase_price)
+            if not chase_result or not chase_result.get('id'):
+                self.logger.error(f"UNHEDGED POSITION: failed to chase Sell leg on {sell_platform} after Buy leg filled on {buy_platform}. Manual intervention required.")
+                await self.notifier.send_message(f"🔥 *UNHEDGED POSITION* 🔥\nBuy leg filled on {buy_platform} but the Sell chase order failed on {sell_platform}. Manual intervention required.")
+            self.active_maker_trade = None
+            return
         if (sell_order and sell_order['status'] == 'closed') and (buy_order and buy_order['status'] == 'open'):
-            self.logger.warning("Maker leg filled (Sell). Chasing the Buy leg."); await self.notifier.send_message("🏃‍♂️ *Chasing Maker Leg* 🏃‍♂️\nSell order filled. Converting Buy order to Taker to complete trade."); await self._order_manager.cancel_order(buy_platform, buy_leg['id'], symbol); await self._order_manager.create_limit_order(buy_platform, symbol, 'buy', buy_leg['amount'], buy_order['price'] * 1.01); self.active_maker_trade = None; return
+            self.logger.warning("Maker leg filled (Sell). Chasing the Buy leg.")
+            await self.notifier.send_message("🏃‍♂️ *Chasing Maker Leg* 🏃‍♂️\nSell order filled. Converting Buy order to Taker to complete trade.")
+            await self._order_manager.cancel_order(buy_platform, buy_leg['id'], symbol)
+            chase_price = buy_order['price'] * (1 + self._chase_slippage_pct)
+            chase_result = await self._order_manager.create_limit_order(buy_platform, symbol, 'buy', buy_leg['amount'], chase_price)
+            if not chase_result or not chase_result.get('id'):
+                self.logger.error(f"UNHEDGED POSITION: failed to chase Buy leg on {buy_platform} after Sell leg filled on {sell_platform}. Manual intervention required.")
+                await self.notifier.send_message(f"🔥 *UNHEDGED POSITION* 🔥\nSell leg filled on {sell_platform} but the Buy chase order failed on {buy_platform}. Manual intervention required.")
+            self.active_maker_trade = None
+            return
         if time.time() - trade_info['creation_time'] > 30:
             self.logger.info("Maker orders timed out. Cancelling and resetting."); await self.cancel_and_reset_maker_trade(); return
 
