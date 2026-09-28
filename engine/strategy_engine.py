@@ -245,9 +245,10 @@ class StrategyEngine:
         if not self.active_maker_trade: return
         self.logger.info("Cancelling active maker orders to reposition.")
         buy_leg, sell_leg = self.active_maker_trade['buy_leg'], self.active_maker_trade['sell_leg']
+        buy_platform, sell_platform, symbol = self.active_maker_trade['buy_platform'], self.active_maker_trade['sell_platform'], self.active_maker_trade['symbol']
         await asyncio.gather(
-            self._order_manager.cancel_order(buy_leg['info']['platform'], buy_leg['id'], buy_leg['symbol']),
-            self._order_manager.cancel_order(sell_leg['info']['platform'], sell_leg['id'], sell_leg['symbol'])
+            self._order_manager.cancel_order(buy_platform, buy_leg['id'], symbol),
+            self._order_manager.cancel_order(sell_platform, sell_leg['id'], symbol)
         )
         self.active_maker_trade = None
         self.logger.info("Maker trade reset. Resuming general strategy evaluation.")

@@ -86,6 +86,11 @@ class LiveOrderManager:
             self.logger.info(f"Placing LIMIT {side} order: {amount:.6f} {symbol} @ {price:.2f} on {platform} {'(Post-Only)' if post_only else ''}")
             order = await self.exchanges[platform].create_limit_order(symbol, side, amount, price, params)
             self.logger.info(f"Successfully placed order on {platform}. Order ID: {order['id']}")
+            # Certains exchanges (ex: OKX) ne renvoient ni le prix ni la quantité dans la
+            # réponse de création d'ordre ; on les complète avec les valeurs demandées.
+            if order.get('price') is None: order['price'] = price
+            if order.get('amount') is None: order['amount'] = amount
+            if order.get('symbol') is None: order['symbol'] = symbol
             return order
         except Exception as e:
             self.logger.error(f"Failed to place order on {platform}: {e}")
