@@ -1,13 +1,18 @@
 # engine/data_engine.py
-import asyncio, logging
+import asyncio, logging, time
 from sortedcontainers import SortedDict
 
 class OrderBook:
     def __init__(self):
         self.bids = SortedDict()
         self.asks = SortedDict()
+        self.last_update_ts = 0.0
+
+    def is_stale(self, max_age_s: float) -> bool:
+        return (time.time() - self.last_update_ts) > max_age_s
 
     def update(self, bids, asks):
+        self.last_update_ts = time.time()
         for item in bids:
             price, qty = float(item[0]), float(item[1])
             if qty == 0: self.bids.pop(price, None)

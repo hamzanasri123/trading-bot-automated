@@ -1,6 +1,6 @@
 # main.py
 import asyncio, logging, signal
-from config import PAPER_TRADING_MODE, TELEGRAM_TOKEN, TELEGRAM_CHAT_ID, API_KEYS
+from config import PAPER_TRADING_MODE, TELEGRAM_TOKEN, TELEGRAM_CHAT_ID, API_KEYS, validate_config
 from execution.live_order_manager import LiveOrderManager
 from engine.data_engine import DataEngine
 from engine.strategy_engine import StrategyEngine
@@ -8,14 +8,22 @@ from connectors.binance_connector import BinanceConnector
 from connectors.okx_connector import OkxConnector
 from utils.notifier import Notifier
 from utils.trade_logger import TradeLogger
+from utils.heartbeat import Heartbeat
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)-20s - %(levelname)-8s - %(message)s')
 
 async def main_bot():
+    config_errors = validate_config()
+    if config_errors:
+        for error in config_errors:
+            logging.critical(f"CONFIG ERROR: {error}")
+        logging.critical("Refusing to start: invalid configuration. Fix config.py and restart.")
+        return
+
     shutdown_event = asyncio.Event()
     notifier = Notifier(token=TELEGRAM_TOKEN, chat_id=TELEGRAM_CHAT_ID)
     trade_logger = TradeLogger()
-    
+
     if PAPER_TRADING_MODE:
         logging.info("Trading Mode: PAPER TRADING (Testnet)")
         order_manager = LiveOrderManager(notifier, trade_logger)
@@ -35,6 +43,7 @@ async def main_bot():
 
     data_engine = DataEngine()
     strategy_engine = StrategyEngine(data_engine.order_books, order_manager, notifier)
+    heartbeat = Heartbeat()
 
     binance_connector = BinanceConnector(data_engine)
     okx_connector = OkxConnector(data_engine)
@@ -44,8 +53,7 @@ async def main_bot():
         asyncio.create_task(binance_connector.run()),
         asyncio.create_task(okx_connector.run()),
         asyncio.create_task(strategy_engine.run()),
-        # --- CORRECTION : La tâche du Notifier est supprimée ---
-        # asyncio.create_task(notifier.run()) 
+        asyncio.create_task(heartbeat.run()),
     ]
 
     loop = asyncio.get_running_loop()

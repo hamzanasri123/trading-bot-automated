@@ -11,6 +11,23 @@ from config import (
 # time, so this is a conservative estimate used only to feed the kill switch.
 EMERGENCY_FLATTEN_PENALTY_PCT = 0.2  # 0.2% of notional
 
+# How long we're willing to wait for a "marketable" limit order to actually
+# fill before we give up, cancel the remainder, and treat whatever quantity
+# did fill as a position that needs reconciling against the other leg.
+FILL_CONFIRMATION_TIMEOUT_S = 5.0
+FILL_POLL_INTERVAL_S = 0.5
+
+# Quantities smaller than this are treated as filled/unfilled exactly (dust
+# from float arithmetic), so we don't try to flatten a residue too small for
+# an exchange to even accept as an order.
+DUST_QTY = 1e-8
+
+# Safety margin over MAX_TRADE_SIZE_USD before we refuse to place an order at
+# all. This is a defense-in-depth check: the strategy engine is supposed to
+# size trades under the cap already, but a bug there should never be able to
+# push a real order past the limit.
+HARD_CAP_TOLERANCE_PCT = 5.0  # allow 5% slack for price movement between sizing and execution
+
 class LiveOrderManager:
     def __init__(self, notifier, trade_logger):
         self.logger = logging.getLogger(self.__class__.__name__)
@@ -123,43 +140,122 @@ class LiveOrderManager:
             # We could not confirm the position was closed: treat it as a leg-risk event for the kill switch.
             self.record_pnl(0.0, is_leg_risk_event=True)
 
+    async def _wait_for_fill(self, platform: str, order_id: str, symbol: str,
+                              timeout_s: float = None, poll_interval_s: float = None):
+        """Poll an order until it reaches a terminal state (closed/canceled/
+        expired/rejected) or the timeout is reached. Returns the last known
+        order dict (or None if it could never be fetched)."""
+        # Read the module-level defaults at call time (not def time) so tests
+        # can shrink them for speed without monkeypatching every call site.
+        timeout_s = FILL_CONFIRMATION_TIMEOUT_S if timeout_s is None else timeout_s
+        poll_interval_s = FILL_POLL_INTERVAL_S if poll_interval_s is None else poll_interval_s
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + timeout_s
+        order = None
+        while True:
+            order = await self.fetch_order_status(platform, order_id, symbol)
+            if order and order.get('status') in ('closed', 'canceled', 'expired', 'rejected'):
+                return order
+            if loop.time() >= deadline:
+                return order
+            await asyncio.sleep(poll_interval_s)
+
+    async def _place_and_confirm(self, platform: str, symbol: str, side: str, volume: float, price: float) -> dict:
+        """Place a leg and wait to see how much of it actually filled. Never
+        assumes a placed order is a filled order. Returns
+        {'order_id', 'filled', 'status'}; filled is 0.0 on any failure."""
+        order = await self.create_limit_order(platform, symbol, side, volume, price)
+        if not order or not order.get('id'):
+            return {'order_id': None, 'filled': 0.0, 'status': 'FAILED'}
+
+        order_id = order['id']
+        final = await self._wait_for_fill(platform, order_id, symbol)
+        filled = float((final or order).get('filled') or 0.0)
+        order_status = (final or order).get('status', 'unknown')
+
+        if order_status == 'open' and filled < volume - DUST_QTY:
+            # Still open after our patience ran out: stop it from filling later, unmonitored.
+            self.logger.warning(f"Order {order_id} on {platform} still open after {FILL_CONFIRMATION_TIMEOUT_S}s ({filled:.8f}/{volume:.8f} filled) — cancelling remainder.")
+            await self.cancel_order(platform, order_id, symbol)
+
+        return {'order_id': order_id, 'filled': filled, 'status': order_status}
+
+    async def _check_sufficient_balance(self, platform_buy: str, platform_sell: str, symbol: str, volume: float, max_buy_price: float) -> bool:
+        base_currency, quote_currency = symbol.split('/')
+        quote_balance, base_balance = await asyncio.gather(
+            self.get_balance(platform_buy, quote_currency),
+            self.get_balance(platform_sell, base_currency),
+        )
+        if quote_balance is None or base_balance is None:
+            self.logger.error("Could not verify account balances before trading. Aborting for safety.")
+            await self.notifier.send_message("⚠️ *Trade Aborted* ⚠️\nCould not verify account balances before execution.")
+            return False
+
+        required_quote = volume * max_buy_price
+        if quote_balance < required_quote:
+            self.logger.error(f"Insufficient {quote_currency} on {platform_buy}. Needed ~{required_quote:.2f}, have {quote_balance:.2f}.")
+            await self.notifier.send_message(f"⚠️ *Trade Aborted* ⚠️\nInsufficient {quote_currency} on {platform_buy} to execute buy order.")
+            return False
+        if base_balance < volume:
+            self.logger.error(f"Insufficient {base_currency} on {platform_sell}. Needed {volume:.6f}, have {base_balance:.6f}.")
+            await self.notifier.send_message(f"⚠️ *Trade Aborted* ⚠️\nInsufficient {base_currency} on {platform_sell} to execute sell order.")
+            return False
+        return True
+
     async def execute_arbitrage(self, volume: float, platform_buy: str, platform_sell: str, max_buy_price: float, min_sell_price: float, symbol: str, estimated_profit_usd: float = 0.0):
         if self.trading_halted:
             self.logger.warning("Kill switch is active — skipping arbitrage execution.")
             return
 
-        buy_order_task = asyncio.create_task(self.create_limit_order(platform_buy, symbol, 'buy', volume, max_buy_price))
-        sell_order_task = asyncio.create_task(self.create_limit_order(platform_sell, symbol, 'sell', volume, min_sell_price))
-        buy_result, sell_result = await asyncio.gather(buy_order_task, sell_order_task, return_exceptions=True)
-        buy_id = buy_result.get('id') if isinstance(buy_result, dict) else None
-        sell_id = sell_result.get('id') if isinstance(sell_result, dict) else None
+        notional_usd = volume * max(max_buy_price, min_sell_price)
+        hard_cap = MAX_TRADE_SIZE_USD * (1 + HARD_CAP_TOLERANCE_PCT / 100)
+        if notional_usd > hard_cap:
+            self.logger.critical(f"ORDER REJECTED: requested notional {notional_usd:.2f} USD exceeds the hard cap of {hard_cap:.2f} USD (MAX_TRADE_SIZE_USD={MAX_TRADE_SIZE_USD}). This should never happen — refusing to trade.")
+            await self.notifier.send_message(f"🛑 *ORDER REJECTED* 🛑\nRequested notional {notional_usd:.2f} USD exceeds the configured cap of {MAX_TRADE_SIZE_USD} USD. Refusing to trade — check strategy sizing logic.")
+            return
+
+        if not await self._check_sufficient_balance(platform_buy, platform_sell, symbol, volume, max_buy_price):
+            return
+
+        buy_leg, sell_leg = await asyncio.gather(
+            self._place_and_confirm(platform_buy, symbol, 'buy', volume, max_buy_price),
+            self._place_and_confirm(platform_sell, symbol, 'sell', volume, min_sell_price),
+        )
+        buy_id, sell_id = buy_leg['order_id'], sell_leg['order_id']
+        net_exposure = round(buy_leg['filled'] - sell_leg['filled'], 10)
 
         status = 'ATTEMPTED'
         profit_usd = None
 
-        if buy_id and sell_id:
-            # Both legs placed as marketable limit orders: treat as filled and record the estimated profit.
-            status = 'ATTEMPTED'
-            profit_usd = estimated_profit_usd
-            self.record_pnl(estimated_profit_usd, is_leg_risk_event=False)
-        elif buy_id and not sell_id:
-            self.logger.error(f"LEG RISK: buy leg placed on {platform_buy} but sell leg failed on {platform_sell}. Flattening buy leg.")
-            await self.notifier.send_message(f"🚨 *LEG RISK* 🚨\nBuy leg went through on {platform_buy} but the sell leg on {platform_sell} failed to place. Flattening the position now.")
-            estimated_loss = -abs(volume * max_buy_price * EMERGENCY_FLATTEN_PENALTY_PCT / 100)
-            await self._flatten_leg(platform_buy, symbol, 'sell', volume)
-            status = 'LEG_RISK_FLATTENED'
-            profit_usd = estimated_loss
-            self.record_pnl(estimated_loss, is_leg_risk_event=True)
-        elif sell_id and not buy_id:
-            self.logger.error(f"LEG RISK: sell leg placed on {platform_sell} but buy leg failed on {platform_buy}. Flattening sell leg.")
-            await self.notifier.send_message(f"🚨 *LEG RISK* 🚨\nSell leg went through on {platform_sell} but the buy leg on {platform_buy} failed to place. Flattening the position now.")
-            estimated_loss = -abs(volume * min_sell_price * EMERGENCY_FLATTEN_PENALTY_PCT / 100)
-            await self._flatten_leg(platform_sell, symbol, 'buy', volume)
+        if abs(net_exposure) <= DUST_QTY:
+            if buy_leg['filled'] > DUST_QTY:
+                # Both legs filled (fully or by the same partial amount): hedged.
+                fill_ratio = buy_leg['filled'] / volume if volume > 0 else 1.0
+                status = 'FILLED' if fill_ratio >= 1 - 1e-6 else 'PARTIAL_FILL_HEDGED'
+                profit_usd = estimated_profit_usd * fill_ratio
+                self.record_pnl(profit_usd, is_leg_risk_event=False)
+            else:
+                # Neither leg filled at all: no position was ever taken, nothing to flatten.
+                status = 'FAILED'
+        elif net_exposure > 0:
+            # Bought more base currency than we managed to sell: close the excess on the buy platform.
+            self.logger.error(f"LEG RISK: net unhedged exposure of +{net_exposure:.8f} {symbol.split('/')[0]} on {platform_buy} (buy filled {buy_leg['filled']:.8f}, sell filled {sell_leg['filled']:.8f}). Flattening.")
+            await self.notifier.send_message(f"🚨 *LEG RISK* 🚨\nUnhedged exposure of +{net_exposure:.8f} {symbol} on {platform_buy} (buy leg outran sell leg). Flattening the position now.")
+            estimated_loss = -abs(net_exposure * max_buy_price * EMERGENCY_FLATTEN_PENALTY_PCT / 100)
+            await self._flatten_leg(platform_buy, symbol, 'sell', net_exposure)
             status = 'LEG_RISK_FLATTENED'
             profit_usd = estimated_loss
             self.record_pnl(estimated_loss, is_leg_risk_event=True)
         else:
-            status = 'FAILED'
+            # Sold more base currency than we managed to buy back: close the shortfall on the sell platform.
+            shortfall = abs(net_exposure)
+            self.logger.error(f"LEG RISK: net unhedged exposure of -{shortfall:.8f} {symbol.split('/')[0]} on {platform_sell} (buy filled {buy_leg['filled']:.8f}, sell filled {sell_leg['filled']:.8f}). Flattening.")
+            await self.notifier.send_message(f"🚨 *LEG RISK* 🚨\nUnhedged exposure of -{shortfall:.8f} {symbol} on {platform_sell} (sell leg outran buy leg). Flattening the position now.")
+            estimated_loss = -abs(shortfall * min_sell_price * EMERGENCY_FLATTEN_PENALTY_PCT / 100)
+            await self._flatten_leg(platform_sell, symbol, 'buy', shortfall)
+            status = 'LEG_RISK_FLATTENED'
+            profit_usd = estimated_loss
+            self.record_pnl(estimated_loss, is_leg_risk_event=True)
 
         self.trade_logger.log_trade(event_type='TAKER_ATTEMPT', strategy_type='TAKER', symbol=symbol, volume=volume, buy_platform=platform_buy, sell_platform=platform_sell, buy_order_id=buy_id, sell_order_id=sell_id, status=status, profit_usd=profit_usd)
 

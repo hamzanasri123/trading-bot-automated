@@ -82,11 +82,18 @@ class StrategyEngine:
         self._last_print_time = 0
         self._print_interval = 10
         self.active_maker_trade = None
+        self.order_book_max_age_s = 3.0
+        self._last_staleness_warning = 0.0
+        self._staleness_warning_interval = 10.0
         
         # --- NOUVEAUX ATTRIBUTS ---
         # Crée un pool de processus. Par défaut, il utilisera tous les cœurs disponibles.
         self.process_pool = ProcessPoolExecutor()
-        self.loop = asyncio.get_event_loop()
+        # Resolved lazily via asyncio.get_running_loop() where actually used
+        # (execute_taker_strategy), rather than captured at construction
+        # time: get_event_loop() is deprecated outside a running loop and
+        # StrategyEngine() may be instantiated (e.g. in tests) before any
+        # loop exists.
 
     def _print_order_books(self):
         print("\n" + "="*80 + f"\n--- ORDER BOOK SNAPSHOT ({time.strftime('%H:%M:%S')}) ---")
@@ -128,6 +135,13 @@ class StrategyEngine:
                     await self.evaluate_market_pair(book_B, book_A, platform_B_key[0], platform_A_key[0], platform_B_key[1])
 
     async def evaluate_market_pair(self, book_buy_on, book_sell_on, buy_platform_name, sell_platform_name, symbol):
+        if book_buy_on.is_stale(self.order_book_max_age_s) or book_sell_on.is_stale(self.order_book_max_age_s):
+            now = time.time()
+            if now - self._last_staleness_warning > self._staleness_warning_interval:
+                self.logger.warning(f"Skipping evaluation: stale order book data for {buy_platform_name}/{sell_platform_name} {symbol} (older than {self.order_book_max_age_s}s).")
+                self._last_staleness_warning = now
+            return
+
         asks, bids = book_buy_on.get_asks(1), book_sell_on.get_bids(1)
         if not asks or not bids: return
         
@@ -155,8 +169,8 @@ class StrategyEngine:
         taker_fee_sell = self._order_manager.get_fees(platform_sell_name)['taker']
         
         # --- MODIFICATION : Délégation du calcul lourd ---
-        result = await self.loop.run_in_executor(
-            self.process_pool, 
+        result = await asyncio.get_running_loop().run_in_executor(
+            self.process_pool,
             calculate_real_profit_sync, 
             asks, bids, taker_fee_buy, taker_fee_sell, MAX_TRADE_SIZE_USD
         )

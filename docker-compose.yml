@@ -7,6 +7,13 @@ services:
     volumes:
       # Syntaxe: [dossier sur la machine hôte]:[dossier dans le conteneur]
       - ./logs:/app/logs
+    # The app logs to stdout only; without this, Docker's default json-file
+    # driver keeps growing forever on a long-running container.
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"
 
 networks:
   default:
