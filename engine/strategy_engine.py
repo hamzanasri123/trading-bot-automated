@@ -113,7 +113,7 @@ class StrategyEngine:
             if current_time - self._last_print_time > self._print_interval:
                 self._print_order_books()
                 self._last_print_time = current_time
-            if not self._is_trading_enabled or self.active_maker_trade:
+            if not self._is_trading_enabled or self.active_maker_trade or self._order_manager.trading_halted:
                 continue
             try: order_books_copy = dict(self._order_books)
             except Exception: continue
@@ -166,12 +166,13 @@ class StrategyEngine:
             self._is_trading_enabled = False
             asyncio.create_task(self.notifier.send_message(f"🚀 *Taker Opportunity Found* 🚀\nProfit: *{result['net_profit_pct']:.4f}%*\nBuy on {platform_buy_name}, Sell on {platform_sell_name}."))
             asyncio.create_task(self._order_manager.execute_arbitrage(
-                volume=result['volume'], 
-                platform_buy=platform_buy_name, 
-                platform_sell=platform_sell_name, 
-                max_buy_price=float(asks[0][0]), 
-                min_sell_price=float(bids[0][0]), 
-                symbol=symbol
+                volume=result['volume'],
+                platform_buy=platform_buy_name,
+                platform_sell=platform_sell_name,
+                max_buy_price=float(asks[0][0]),
+                min_sell_price=float(bids[0][0]),
+                symbol=symbol,
+                estimated_profit_usd=result['net_profit_usd']
             ))
             asyncio.create_task(self.cooldown_trading())
 

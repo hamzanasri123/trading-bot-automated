@@ -1,7 +1,15 @@
 # execution/live_order_manager.py
-import asyncio, logging
+import asyncio, logging, datetime
 import ccxt.async_support as ccxt
-from config import API_KEYS, PAPER_TRADING_MODE, MAX_TRADE_SIZE_USD
+from config import (
+    API_KEYS, PAPER_TRADING_MODE, MAX_TRADE_SIZE_USD,
+    MAX_DAILY_LOSS_USD, MAX_CONSECUTIVE_LEG_RISK_EVENTS,
+)
+
+# Rough slippage+fees penalty (in fraction of notional) applied when a leg is
+# emergency-flattened at market. We don't know the exact fill price ahead of
+# time, so this is a conservative estimate used only to feed the kill switch.
+EMERGENCY_FLATTEN_PENALTY_PCT = 0.2  # 0.2% of notional
 
 class LiveOrderManager:
     def __init__(self, notifier, trade_logger):
@@ -10,6 +18,12 @@ class LiveOrderManager:
         self.fees = {}
         self.notifier = notifier
         self.trade_logger = trade_logger
+
+        # --- Kill switch state ---
+        self.trading_halted = False
+        self._daily_pnl_usd = 0.0
+        self._daily_pnl_date = datetime.date.today()
+        self._consecutive_leg_risk_events = 0
 
     async def initialize(self):
         self.logger.info("Initializing LiveOrderManager...")
@@ -64,14 +78,90 @@ class LiveOrderManager:
         except Exception as e:
             self.logger.error(f"Error fetching balance for {currency} on {platform}: {e}"); return None
 
-    async def execute_arbitrage(self, volume: float, platform_buy: str, platform_sell: str, max_buy_price: float, min_sell_price: float, symbol: str):
-        # ... (logique de vérification des soldes, etc.) ...
+    def _reset_daily_pnl_if_needed(self):
+        today = datetime.date.today()
+        if today != self._daily_pnl_date:
+            self._daily_pnl_date = today
+            self._daily_pnl_usd = 0.0
+            self._consecutive_leg_risk_events = 0
+            self.logger.info("Daily PnL counter reset for the new day.")
+
+    def _trip_kill_switch(self, reason: str):
+        if self.trading_halted:
+            return
+        self.trading_halted = True
+        self.logger.critical(f"KILL SWITCH TRIGGERED: {reason}. Trading halted — manual restart required.")
+        asyncio.create_task(self.notifier.send_message(
+            f"🛑 *KILL SWITCH TRIGGERED* 🛑\n{reason}\nTrading has been halted. A manual restart is required after review."
+        ))
+
+    def record_pnl(self, amount_usd: float, is_leg_risk_event: bool = False):
+        """Feed an estimated PnL outcome (positive or negative) into the daily
+        loss kill switch, and track consecutive leg-risk events."""
+        self._reset_daily_pnl_if_needed()
+        self._daily_pnl_usd += amount_usd
+        self._consecutive_leg_risk_events = self._consecutive_leg_risk_events + 1 if is_leg_risk_event else 0
+
+        if self._daily_pnl_usd <= -MAX_DAILY_LOSS_USD:
+            self._trip_kill_switch(f"Daily loss limit reached: estimated PnL {self._daily_pnl_usd:.2f} USD <= -{MAX_DAILY_LOSS_USD} USD.")
+        elif self._consecutive_leg_risk_events >= MAX_CONSECUTIVE_LEG_RISK_EVENTS:
+            self._trip_kill_switch(f"{self._consecutive_leg_risk_events} consecutive leg-risk events detected.")
+
+    async def _flatten_leg(self, platform: str, symbol: str, closing_side: str, volume: float):
+        """Emergency-close an unhedged position with a market order after the
+        opposite leg of an arbitrage trade failed to place."""
+        try:
+            order = await self.exchanges[platform].create_market_order(symbol, closing_side, volume)
+            self.logger.warning(f"Flattened unhedged leg on {platform}: {closing_side} {volume:.6f} {symbol}. Order ID: {order.get('id')}")
+            await self.notifier.send_message(f"✅ Unhedged position flattened on {platform} ({closing_side} {volume:.6f} {symbol}).")
+        except Exception as e:
+            self.logger.critical(f"FAILED TO FLATTEN UNHEDGED POSITION on {platform} ({closing_side} {volume:.6f} {symbol}): {e}", exc_info=True)
+            await self.notifier.send_message(
+                f"🆘 *CRITICAL* 🆘\nFailed to flatten an unhedged position on {platform}!\n"
+                f"Side: {closing_side}, Volume: {volume:.6f} {symbol}\nManual intervention required immediately.\nReason: `{e}`"
+            )
+            # We could not confirm the position was closed: treat it as a leg-risk event for the kill switch.
+            self.record_pnl(0.0, is_leg_risk_event=True)
+
+    async def execute_arbitrage(self, volume: float, platform_buy: str, platform_sell: str, max_buy_price: float, min_sell_price: float, symbol: str, estimated_profit_usd: float = 0.0):
+        if self.trading_halted:
+            self.logger.warning("Kill switch is active — skipping arbitrage execution.")
+            return
+
         buy_order_task = asyncio.create_task(self.create_limit_order(platform_buy, symbol, 'buy', volume, max_buy_price))
         sell_order_task = asyncio.create_task(self.create_limit_order(platform_sell, symbol, 'sell', volume, min_sell_price))
         buy_result, sell_result = await asyncio.gather(buy_order_task, sell_order_task, return_exceptions=True)
         buy_id = buy_result.get('id') if isinstance(buy_result, dict) else None
         sell_id = sell_result.get('id') if isinstance(sell_result, dict) else None
-        self.trade_logger.log_trade(event_type='TAKER_ATTEMPT', strategy_type='TAKER', symbol=symbol, volume=volume, buy_platform=platform_buy, sell_platform=platform_sell, buy_order_id=buy_id, sell_order_id=sell_id, status='ATTEMPTED')
+
+        status = 'ATTEMPTED'
+        profit_usd = None
+
+        if buy_id and sell_id:
+            # Both legs placed as marketable limit orders: treat as filled and record the estimated profit.
+            status = 'ATTEMPTED'
+            profit_usd = estimated_profit_usd
+            self.record_pnl(estimated_profit_usd, is_leg_risk_event=False)
+        elif buy_id and not sell_id:
+            self.logger.error(f"LEG RISK: buy leg placed on {platform_buy} but sell leg failed on {platform_sell}. Flattening buy leg.")
+            await self.notifier.send_message(f"🚨 *LEG RISK* 🚨\nBuy leg went through on {platform_buy} but the sell leg on {platform_sell} failed to place. Flattening the position now.")
+            estimated_loss = -abs(volume * max_buy_price * EMERGENCY_FLATTEN_PENALTY_PCT / 100)
+            await self._flatten_leg(platform_buy, symbol, 'sell', volume)
+            status = 'LEG_RISK_FLATTENED'
+            profit_usd = estimated_loss
+            self.record_pnl(estimated_loss, is_leg_risk_event=True)
+        elif sell_id and not buy_id:
+            self.logger.error(f"LEG RISK: sell leg placed on {platform_sell} but buy leg failed on {platform_buy}. Flattening sell leg.")
+            await self.notifier.send_message(f"🚨 *LEG RISK* 🚨\nSell leg went through on {platform_sell} but the buy leg on {platform_buy} failed to place. Flattening the position now.")
+            estimated_loss = -abs(volume * min_sell_price * EMERGENCY_FLATTEN_PENALTY_PCT / 100)
+            await self._flatten_leg(platform_sell, symbol, 'buy', volume)
+            status = 'LEG_RISK_FLATTENED'
+            profit_usd = estimated_loss
+            self.record_pnl(estimated_loss, is_leg_risk_event=True)
+        else:
+            status = 'FAILED'
+
+        self.trade_logger.log_trade(event_type='TAKER_ATTEMPT', strategy_type='TAKER', symbol=symbol, volume=volume, buy_platform=platform_buy, sell_platform=platform_sell, buy_order_id=buy_id, sell_order_id=sell_id, status=status, profit_usd=profit_usd)
 
     async def create_limit_order(self, platform: str, symbol: str, side: str, amount: float, price: float, post_only: bool = False):
         if platform not in self.exchanges:

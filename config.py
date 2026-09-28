@@ -28,3 +28,13 @@ TELEGRAM_CHAT_ID = '5763218219'
 # --- SAFETY & RISK MANAGEMENT ---
 # Maximum size in USD for a single arbitrage trade. This is your most important risk control.
 MAX_TRADE_SIZE_USD = 15.0
+
+# Kill switch: if the estimated cumulative PnL for the day drops to or below
+# -MAX_DAILY_LOSS_USD, trading is halted until the bot is manually restarted.
+MAX_DAILY_LOSS_USD = 50.0
+
+# Kill switch: if this many "leg risk" events (one leg of an arbitrage trade
+# failed to place while the other went through) happen back to back, trading
+# is halted. This usually signals a bug, an exchange outage, or bad market
+# conditions rather than normal slippage.
+MAX_CONSECUTIVE_LEG_RISK_EVENTS = 2

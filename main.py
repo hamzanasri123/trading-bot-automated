@@ -24,6 +24,7 @@ async def main_bot():
         order_manager = LiveOrderManager(notifier, trade_logger)
     
     await order_manager.initialize()
+    await notifier.start_worker()
 
     logging.info("--- Initial Balance Check ---")
     for platform in order_manager.exchanges.keys():
@@ -65,6 +66,7 @@ async def main_bot():
         for task in tasks: task.cancel()
         await asyncio.gather(*tasks, return_exceptions=True)
         await order_manager.close_all()
+        await notifier.stop_worker()
         trade_logger.close()
         logging.info("All tasks have been cancelled and connections closed.")
 
