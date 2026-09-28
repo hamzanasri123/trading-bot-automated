@@ -1,6 +1,7 @@
 # analysis/trade_logger.py
 import sqlite3
 import logging
+import os
 import threading
 from queue import Queue, Empty
 
@@ -21,6 +22,9 @@ class TradeLogger:
     def _create_connection(self):
         """Crée une connexion à la base de données."""
         try:
+            db_dir = os.path.dirname(self.db_path)
+            if db_dir:
+                os.makedirs(db_dir, exist_ok=True)
             # check_same_thread=False est nécessaire car on écrit depuis un thread différent
             return sqlite3.connect(self.db_path, check_same_thread=False)
         except sqlite3.Error as e:
