@@ -106,6 +106,53 @@ class LiveOrderManager:
             await self.notifier.send_message(f"🔥 *ORDER FAILED* 🔥\nFailed to place {side} order on {platform}.\nReason: `{e}`")
             return None
 
+    async def create_market_order(self, platform: str, symbol: str, side: str, amount: float = None, cost: float = None):
+        """
+        Place un vrai ordre MARKET (exécution immédiate garantie ou rejet),
+        contrairement à create_limit_order dont l'ordre peut rester posé sur
+        le carnet réel si le prix "agressif" calculé ne franchit pas le
+        spread au moment de l'envoi -- ce qui a causé un vidage silencieux
+        du solde ETH lors du premier test de l'arbitrage triangulaire.
+
+        Pour un achat, préférer `cost` (montant en devise de cotation à
+        dépenser) quand on le connaît : ça évite d'avoir à pré-estimer la
+        quantité de devise de base, qui peut différer du montant réellement
+        obtenu par la jambe précédente. Pour une vente, `amount` (quantité
+        de devise de base) est requis.
+        """
+        if platform not in self.exchanges:
+            self.logger.error(f"Attempted to place order on uninitialized platform: {platform}")
+            return None
+        exchange = self.exchanges[platform]
+        try:
+            if side == 'buy' and cost is not None:
+                precise_cost = float(exchange.cost_to_precision(symbol, cost))
+                self.logger.info(f"Placing MARKET buy order: spend {precise_cost:.6f} (quote) on {symbol} on {platform}")
+                order = await exchange.create_market_buy_order_with_cost(symbol, precise_cost)
+            else:
+                precise_amount = float(exchange.amount_to_precision(symbol, amount))
+                self.logger.info(f"Placing MARKET {side} order: {precise_amount:.8f} {symbol} on {platform}")
+                order = await exchange.create_market_order(symbol, side, precise_amount)
+
+            # Un market order devrait se remplir immédiatement ; si la réponse
+            # initiale ne le montre pas encore, on interroge quelques fois de
+            # plus avant d'abandonner, plutôt que de supposer un remplissage.
+            filled = order.get('filled') or 0
+            if not filled:
+                for _ in range(5):
+                    await asyncio.sleep(0.3)
+                    fresh = await self.fetch_order_status(platform, order['id'], symbol)
+                    if fresh and (fresh.get('filled') or 0) > 0:
+                        order = fresh
+                        break
+
+            self.logger.info(f"Market order on {platform} ({symbol}): id={order.get('id')}, filled={order.get('filled')}, cost={order.get('cost')}")
+            return order
+        except Exception as e:
+            self.logger.error(f"Failed to place market {side} order on {platform} ({symbol}): {e}")
+            await self.notifier.send_message(f"🔥 *ORDER FAILED* 🔥\nFailed to place market {side} order on {platform} ({symbol}).\nReason: `{e}`")
+            return None
+
     async def cancel_order(self, platform: str, order_id: str, symbol: str):
         if platform not in self.exchanges: return False
         try:
