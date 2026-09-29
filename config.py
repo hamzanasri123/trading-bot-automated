@@ -36,3 +36,9 @@ TELEGRAM_CHAT_ID = os.environ.get('TELEGRAM_CHAT_ID', '')
 # --- SAFETY & RISK MANAGEMENT ---
 # Maximum size in USD for a single arbitrage trade. This is your most important risk control.
 MAX_TRADE_SIZE_USD = 15.0
+
+# Seuil de profit minimum (en %) au-delà des 3 frais taker déjà déduits dans le
+# calcul, avant de déclencher un cycle triangulaire. Sert de marge de sécurité
+# contre le slippage et l'imprécision du calcul en haut du carnet. Plus bas =
+# plus de trades tentés, mais moins de marge d'erreur par trade.
+MIN_PROFIT_PCT_TRIANGULAR = 0.10

@@ -1,6 +1,6 @@
 # engine/triangular_engine.py
 import asyncio, logging, time
-from config import MAX_TRADE_SIZE_USD
+from config import MAX_TRADE_SIZE_USD, MIN_PROFIT_PCT_TRIANGULAR
 
 class TriangularEngine:
     """
@@ -50,8 +50,8 @@ class TriangularEngine:
         self.min_trade_size_usdc = MAX_TRADE_SIZE_USD
         self.max_trade_size_usdc = MAX_TRADE_SIZE_USD * 10
         # Marge de sécurité au-delà des 3 frais taker, pour absorber le slippage
-        # et l'imprécision du calcul en top-of-book.
-        self.min_profit_pct = 0.15
+        # et l'imprécision du calcul en top-of-book. Réglable via config.py.
+        self.min_profit_pct = MIN_PROFIT_PCT_TRIANGULAR
 
         # Coupe-circuit : si le P&L réel cumulé de la session (calculé à partir
         # des montants effectivement exécutés, pas des estimations) descend
