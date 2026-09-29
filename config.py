@@ -43,8 +43,25 @@ PAPER_TRADING_MODE = True
 TELEGRAM_TOKEN = os.environ.get('TELEGRAM_TOKEN', '')
 TELEGRAM_CHAT_ID = os.environ.get('TELEGRAM_CHAT_ID', '')
 
+# --- STRATEGY TOGGLES ---
+# Active/désactive chaque stratégie indépendamment. Chaque stratégie a son
+# propre budget configuré plus bas (MAX_TRADE_SIZE_USD et ses dérivés), qui
+# suppose implicitement un capital DÉDIÉ par stratégie -- les faire toutes
+# tourner en parallèle sur un compte réel à capital limité les ferait se
+# disputer le même solde (insufficient balance en boucle, voire pire : une
+# jambe exécutée pendant que l'autre échoue faute de fonds). Pour un compte
+# réel de $150, concentrer sur 1-2 stratégies plutôt que tout activer.
+ENABLE_TRIANGULAR = False
+ENABLE_CROSS_EXCHANGE = False
+ENABLE_MARKET_MAKING = False
+ENABLE_STAT_ARB = True
+ENABLE_TREND_FOLLOWING = True
+ENABLE_FUNDING_ARB = False
+
 # --- SAFETY & RISK MANAGEMENT ---
 # Maximum size in USD for a single arbitrage trade. This is your most important risk control.
+# Sert de valeur par défaut pour les tailles de trade des stratégies qui ne
+# définissent pas la leur explicitement plus bas.
 MAX_TRADE_SIZE_USD = 150.0
 
 # Seuil de profit minimum (en %) au-delà des 3 frais taker déjà déduits dans le
@@ -86,7 +103,11 @@ STAT_ARB_ENTRY_ZSCORE = 2.0
 # Écart-type en dessous duquel on considère que le retour à la moyenne a eu
 # lieu (déclenche la revente pour réaliser le profit).
 STAT_ARB_EXIT_ZSCORE = 0.3
-STAT_ARB_TRADE_SIZE_USD = MAX_TRADE_SIZE_USD
+# Split manuellement du solde réel entre stat-arb et trend-following (les
+# deux stratégies actives par défaut) : $150 / 2 stratégies - une marge pour
+# les frais/slippage, plutôt que MAX_TRADE_SIZE_USD (150) pour chacune, ce
+# qui ferait se disputer le même solde de $150 entre les deux.
+STAT_ARB_TRADE_SIZE_USD = 65.0
 STAT_ARB_STOP_LOSS_PCT = 15.0
 
 # --- SUIVI DE TENDANCE (directionnel, spot uniquement, long-only) ---
@@ -94,7 +115,8 @@ TREND_SYMBOL = "BTC/USDC"
 TREND_PLATFORM = "Binance"
 TREND_FAST_WINDOW = 20
 TREND_SLOW_WINDOW = 80
-TREND_TRADE_SIZE_USD = MAX_TRADE_SIZE_USD
+# Même split manuel que STAT_ARB_TRADE_SIZE_USD ci-dessus.
+TREND_TRADE_SIZE_USD = 65.0
 TREND_STOP_LOSS_PCT = 10.0
 # Zone morte anti-whipsaw : écart minimum (en %) entre SMA rapide et SMA
 # lente pour compter comme un vrai croisement. Sans ça, sur un carnet calme,
