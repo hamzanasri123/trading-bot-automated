@@ -5,8 +5,10 @@ from config import MAX_TRADE_SIZE_USD, MIN_PROFIT_PCT_TRIANGULAR
 class TriangularEngine:
     """
     Arbitrage triangulaire sur une seule plateforme (par défaut Binance) :
-    exploite les écarts de prix entre 3 paires corrélées (BTC/USDC, ETH/BTC,
-    ETH/USDC) sans jamais toucher un autre exchange.
+    exploite les écarts de prix entre plusieurs paires corrélées, toutes
+    adossées à un même "pont" BTC/USDC, sans jamais toucher un autre
+    exchange. Peut surveiller plusieurs actifs en parallèle (ex: ETH, XRP,
+    SOL) -- chacun forme son propre triangle avec BTC et USDC.
 
     IMPORTANT (v2) : chaque jambe est un vrai ordre MARKET, exécuté et
     vérifié (montant réellement rempli) avant de passer à la jambe
@@ -23,11 +25,16 @@ class TriangularEngine:
       plus gros que le haut du carnet n'est pas modélisé -- ça reste un
       filtre pour décider s'il vaut la peine de tenter un cycle, pas une
       garantie de profit exact.
-    - Les frais taker sont approximés avec ceux de BTC/USDC pour les 3
+    - Les frais taker sont approximés avec ceux de BTC/USDC pour toutes les
       paires (Binance applique en général un taux plat par compte, mais ça
       reste une approximation).
+    - Un seul cycle s'exécute à la fois (verrou global _is_trading_enabled)
+      même avec plusieurs triangles surveillés : ça évite que deux cycles
+      concurrents se disputent le même solde BTC/USDC en même temps. Plus
+      de triangles = plus de chances qu'UN d'eux déclenche, pas plusieurs
+      exécutions simultanées.
     """
-    def __init__(self, order_books: dict, order_manager, notifier, trade_logger=None, platform='Binance'):
+    def __init__(self, order_books: dict, order_manager, notifier, trade_logger=None, platform='Binance', legs=None):
         self._order_books = order_books
         self._order_manager = order_manager
         self.notifier = notifier
@@ -35,10 +42,14 @@ class TriangularEngine:
         self.platform = platform
         self.logger = logging.getLogger(self.__class__.__name__)
 
-        # Le triangle : USDC <-> BTC <-> ETH <-> USDC
-        self.pair_bridge = "BTC/USDC"   # USDC <-> BTC
-        self.pair_leg = "ETH/BTC"       # BTC <-> ETH
-        self.pair_quote = "ETH/USDC"    # USDC <-> ETH
+        # Le pont commun à tous les triangles : USDC <-> BTC
+        self.pair_bridge = "BTC/USDC"
+        # Un triangle par actif surveillé : USDC <-> BTC <-> {leg} <-> USDC
+        legs = legs or ["ETH"]
+        self.triangles = [
+            {"leg_asset": leg, "pair_leg": f"{leg}/BTC", "pair_quote": f"{leg}/USDC"}
+            for leg in legs
+        ]
 
         self.trade_size_usdc = MAX_TRADE_SIZE_USD
         # Sizing symétrique : sur un cycle gagnant, on ajoute ce pourcentage du
@@ -72,7 +83,8 @@ class TriangularEngine:
         return self._order_manager.get_fees(self.platform).get('taker', 0.1)
 
     async def run(self):
-        self.logger.info(f"Triangular Engine is running on {self.platform} ({self.pair_bridge} / {self.pair_leg} / {self.pair_quote}).")
+        leg_names = ", ".join(t["leg_asset"] for t in self.triangles)
+        self.logger.info(f"Triangular Engine is running on {self.platform}, watching {len(self.triangles)} triangle(s) via {self.pair_bridge}: {leg_names}.")
         while True:
             await asyncio.sleep(0.2)
             current_time = time.time()
@@ -82,29 +94,44 @@ class TriangularEngine:
             if self._halted or not self._is_trading_enabled:
                 continue
 
-            book_bridge, book_leg, book_quote = self._book(self.pair_bridge), self._book(self.pair_leg), self._book(self.pair_quote)
-            if not book_bridge or not book_leg or not book_quote:
+            book_bridge = self._book(self.pair_bridge)
+            if not book_bridge:
                 continue
 
-            forward_pct = self._estimate_profit_pct('forward', book_bridge, book_leg, book_quote)
-            if forward_pct is not None and forward_pct > self.min_profit_pct:
-                await self._execute_cycle('forward', forward_pct)
-                continue
+            for triangle in self.triangles:
+                book_leg = self._book(triangle["pair_leg"])
+                book_quote = self._book(triangle["pair_quote"])
+                if not book_leg or not book_quote:
+                    continue
 
-            reverse_pct = self._estimate_profit_pct('reverse', book_bridge, book_leg, book_quote)
-            if reverse_pct is not None and reverse_pct > self.min_profit_pct:
-                await self._execute_cycle('reverse', reverse_pct)
+                forward_pct = self._estimate_profit_pct('forward', book_bridge, book_leg, book_quote)
+                if forward_pct is not None and forward_pct > self.min_profit_pct:
+                    await self._execute_cycle('forward', forward_pct, triangle)
+                    break
+
+                reverse_pct = self._estimate_profit_pct('reverse', book_bridge, book_leg, book_quote)
+                if reverse_pct is not None and reverse_pct > self.min_profit_pct:
+                    await self._execute_cycle('reverse', reverse_pct, triangle)
+                    break
 
     def _print_status(self):
-        book_bridge, book_leg, book_quote = self._book(self.pair_bridge), self._book(self.pair_leg), self._book(self.pair_quote)
-        if not book_bridge or not book_leg or not book_quote:
+        book_bridge = self._book(self.pair_bridge)
+        if not book_bridge:
             self.logger.info("[Triangular] Waiting for order books...")
             return
-        f_pct = self._estimate_profit_pct('forward', book_bridge, book_leg, book_quote)
-        r_pct = self._estimate_profit_pct('reverse', book_bridge, book_leg, book_quote)
-        f_str = f"{f_pct:.4f}%" if f_pct is not None else "n/a"
-        r_str = f"{r_pct:.4f}%" if r_pct is not None else "n/a"
-        self.logger.info(f"[Triangular] Best cycle right now -- forward: {f_str}, reverse: {r_str} (threshold: {self.min_profit_pct}%)")
+        parts = []
+        for triangle in self.triangles:
+            book_leg = self._book(triangle["pair_leg"])
+            book_quote = self._book(triangle["pair_quote"])
+            if not book_leg or not book_quote:
+                parts.append(f"{triangle['leg_asset']}: waiting for books")
+                continue
+            f_pct = self._estimate_profit_pct('forward', book_bridge, book_leg, book_quote)
+            r_pct = self._estimate_profit_pct('reverse', book_bridge, book_leg, book_quote)
+            f_str = f"{f_pct:.4f}%" if f_pct is not None else "n/a"
+            r_str = f"{r_pct:.4f}%" if r_pct is not None else "n/a"
+            parts.append(f"{triangle['leg_asset']} (fwd {f_str} / rev {r_str})")
+        self.logger.info(f"[Triangular] Best cycles right now (threshold {self.min_profit_pct}%) -- " + " | ".join(parts))
 
     def _estimate_profit_pct(self, direction, book_bridge, book_leg, book_quote):
         # Estimation en haut du carnet uniquement : sert à décider si un cycle
@@ -117,35 +144,36 @@ class TriangularEngine:
                 return None
             price_bridge, price_leg, price_quote = float(asks_bridge[0][0]), float(asks_leg[0][0]), float(bids_quote[0][0])
             btc = (self.trade_size_usdc / price_bridge) * (1 - fee)
-            eth = (btc / price_leg) * (1 - fee)
-            usdc_final = (eth * price_quote) * (1 - fee)
+            leg_qty = (btc / price_leg) * (1 - fee)
+            usdc_final = (leg_qty * price_quote) * (1 - fee)
         else:
             asks_quote, bids_leg, bids_bridge = book_quote.get_asks(1), book_leg.get_bids(1), book_bridge.get_bids(1)
             if not asks_quote or not bids_leg or not bids_bridge:
                 return None
             price_quote, price_leg, price_bridge = float(asks_quote[0][0]), float(bids_leg[0][0]), float(bids_bridge[0][0])
-            eth = (self.trade_size_usdc / price_quote) * (1 - fee)
-            btc = (eth * price_leg) * (1 - fee)
+            leg_qty = (self.trade_size_usdc / price_quote) * (1 - fee)
+            btc = (leg_qty * price_leg) * (1 - fee)
             usdc_final = (btc * price_bridge) * (1 - fee)
 
         profit_usd = usdc_final - self.trade_size_usdc
         return (profit_usd / self.trade_size_usdc) * 100
 
-    async def _execute_cycle(self, direction, estimated_pct):
-        self.logger.warning(f"[Triangular] Opportunity found ({direction}): estimated profit {estimated_pct:.4f}%. Executing with real market orders...")
+    async def _execute_cycle(self, direction, estimated_pct, triangle):
+        pair_leg, pair_quote = triangle["pair_leg"], triangle["pair_quote"]
+        self.logger.warning(f"[Triangular] Opportunity found on {triangle['leg_asset']} ({direction}): estimated profit {estimated_pct:.4f}%. Executing with real market orders...")
         self._is_trading_enabled = False
-        await self.notifier.send_message(f"🔺 *Triangular Opportunity* 🔺\nDirection: {direction}\nEstimated profit: {estimated_pct:.4f}%")
+        await self.notifier.send_message(f"🔺 *Triangular Opportunity* 🔺\nAsset: {triangle['leg_asset']}\nDirection: {direction}\nEstimated profit: {estimated_pct:.4f}%")
 
         if direction == 'forward':
             legs_plan = [
                 (self.pair_bridge, 'buy'),   # USDC -> BTC
-                (self.pair_leg, 'buy'),      # BTC -> ETH
-                (self.pair_quote, 'sell'),   # ETH -> USDC
+                (pair_leg, 'buy'),           # BTC -> leg
+                (pair_quote, 'sell'),        # leg -> USDC
             ]
         else:
             legs_plan = [
-                (self.pair_quote, 'buy'),    # USDC -> ETH
-                (self.pair_leg, 'sell'),     # ETH -> BTC
+                (pair_quote, 'buy'),         # USDC -> leg
+                (pair_leg, 'sell'),          # leg -> BTC
                 (self.pair_bridge, 'sell'),  # BTC -> USDC
             ]
 
@@ -172,6 +200,8 @@ class TriangularEngine:
                 received_cost = order.get('cost')
                 held_amount = received_cost if received_cost else filled * (order.get('average') or 0)
 
+        symbol_label = f"{self.pair_bridge}|{pair_leg}|{pair_quote}"
+
         if aborted:
             recovered_usdc = await self._unwind(executed)
             if recovered_usdc is not None:
@@ -181,7 +211,7 @@ class TriangularEngine:
                 if self.trade_logger:
                     self.trade_logger.log_trade(
                         event_type='TRIANGULAR_UNWOUND', platform_buy=self.platform, platform_sell=self.platform,
-                        symbol=f"{self.pair_bridge}|{self.pair_leg}|{self.pair_quote}", volume=self.trade_size_usdc,
+                        symbol=symbol_label, volume=self.trade_size_usdc,
                         profit_usd=real_profit_usd, profit_pct=real_profit_pct,
                         details=f"direction={direction}, partial legs=" + ",".join(f"{l['symbol']}:{l['order']['id']}" for l in executed)
                     )
@@ -194,11 +224,11 @@ class TriangularEngine:
             real_profit_usd = final_usdc - self.trade_size_usdc
             real_profit_pct = (real_profit_usd / self.trade_size_usdc) * 100
             self.logger.info(f"[Triangular] All 3 legs filled. Real profit: ${real_profit_usd:.4f} ({real_profit_pct:.4f}%)")
-            await self.notifier.send_message(f"✅ *Triangular Cycle Complete* ✅\nReal profit: ${real_profit_usd:.4f} ({real_profit_pct:.4f}%)")
+            await self.notifier.send_message(f"✅ *Triangular Cycle Complete* ✅\nAsset: {triangle['leg_asset']}\nReal profit: ${real_profit_usd:.4f} ({real_profit_pct:.4f}%)")
             if self.trade_logger:
                 self.trade_logger.log_trade(
                     event_type='TRIANGULAR_FILLED', platform_buy=self.platform, platform_sell=self.platform,
-                    symbol=f"{self.pair_bridge}|{self.pair_leg}|{self.pair_quote}", volume=self.trade_size_usdc,
+                    symbol=symbol_label, volume=self.trade_size_usdc,
                     profit_usd=real_profit_usd, profit_pct=real_profit_pct,
                     details=f"direction={direction}, legs=" + ",".join(f"{l['symbol']}:{l['order']['id']}" for l in executed)
                 )

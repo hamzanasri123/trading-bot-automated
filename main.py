@@ -23,17 +23,19 @@ async def main_bot():
 
     await order_manager.initialize()
 
+    triangular_legs = ["ETH", "XRP", "SOL"]
+
     logging.info("--- Initial Balance Check ---")
     for platform in order_manager.exchanges.keys():
-        for currency in ['USDC', 'BTC', 'ETH']:
+        for currency in ['USDC', 'BTC'] + triangular_legs:
             balance = await order_manager.get_balance(platform, currency)
             if balance is not None: logging.info(f"[{platform}] Available balance: {balance:.6f} {currency}")
     logging.info("-----------------------------")
 
     data_engine = DataEngine()
-    triangular_symbols = ["BTC/USDC", "ETH/BTC", "ETH/USDC"]
-    triangular_engine = TriangularEngine(data_engine.order_books, order_manager, notifier, trade_logger, platform='Binance')
+    triangular_engine = TriangularEngine(data_engine.order_books, order_manager, notifier, trade_logger, platform='Binance', legs=triangular_legs)
 
+    triangular_symbols = ["BTC/USDC"] + [f"{leg}/BTC" for leg in triangular_legs] + [f"{leg}/USDC" for leg in triangular_legs]
     binance_connector = BinanceConnector(data_engine, symbols=triangular_symbols)
 
     logging.info("Starting triangular arbitrage bot tasks...")
