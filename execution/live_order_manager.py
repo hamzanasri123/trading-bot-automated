@@ -14,6 +14,12 @@ class LiveOrderManager:
     async def initialize(self):
         self.logger.info("Initializing LiveOrderManager...")
         for name, keys in API_KEYS.items():
+            if name == 'BinanceFutures':
+                # Pas un exchange spot -- ccxt n'a même pas d'identifiant
+                # "binancefutures" (le testnet futures USD-M s'appelle
+                # `binanceusdm`). Connexion dédiée gérée séparément par
+                # FuturesOrderManager, jamais par ce manager spot.
+                continue
             if not keys['apiKey'] or 'YOUR' in keys['apiKey']:
                 self.logger.warning(f"Invalid API keys for {name}. This exchange will be skipped."); continue
             try:
