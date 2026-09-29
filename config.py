@@ -93,6 +93,13 @@ TREND_FAST_WINDOW = 20
 TREND_SLOW_WINDOW = 80
 TREND_TRADE_SIZE_USD = MAX_TRADE_SIZE_USD
 TREND_STOP_LOSS_PCT = 10.0
+# Zone morte anti-whipsaw : écart minimum (en %) entre SMA rapide et SMA
+# lente pour compter comme un vrai croisement. Sans ça, sur un carnet calme,
+# le bruit numérique entre deux moyennes quasi identiques déclenche des
+# allers-retours d'achat/vente sans aucun mouvement de prix réel derrière
+# (observé en direct : entrée puis sortie 8 secondes plus tard, SMA20==SMA80
+# au moment de la sortie).
+TREND_CROSSOVER_THRESHOLD_PCT = 0.03
 
 # --- FUNDING RATE (futures perpétuels -- MONITORING SEULEMENT pour l'instant) ---
 # Pas d'exécution automatique de positions à effet de levier tant que ce n'a

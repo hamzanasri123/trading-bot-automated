@@ -2,7 +2,8 @@
 import asyncio, logging, time
 from config import (
     TREND_SYMBOL, TREND_PLATFORM, TREND_FAST_WINDOW, TREND_SLOW_WINDOW,
-    TREND_TRADE_SIZE_USD, TREND_STOP_LOSS_PCT, MAX_TRADE_SIZE_USD
+    TREND_TRADE_SIZE_USD, TREND_STOP_LOSS_PCT, TREND_CROSSOVER_THRESHOLD_PCT,
+    MAX_TRADE_SIZE_USD
 )
 
 class TrendFollowingEngine:
@@ -37,6 +38,7 @@ class TrendFollowingEngine:
         self.slow_window = TREND_SLOW_WINDOW
         self.trade_size_usd = TREND_TRADE_SIZE_USD
         self.stop_loss_pct = TREND_STOP_LOSS_PCT
+        self.crossover_threshold_pct = TREND_CROSSOVER_THRESHOLD_PCT
 
         self.position_qty = 0.0
         self.position_cost_usd = 0.0
@@ -112,8 +114,23 @@ class TrendFollowingEngine:
             if not self._is_trading_enabled:
                 continue
 
-            signal = 'bullish' if fast_sma > slow_sma else 'bearish'
-            crossed = signal != self._last_signal
+            # Zone morte autour du croisement : sur un carnet peu liquide (ou
+            # simplement calme), les deux moyennes mobiles finissent quasi
+            # identiques et le moindre bruit numérique fait basculer le signe
+            # de fast_sma - slow_sma en permanence -- un vrai croisement de
+            # tendance sans aucun mouvement de prix réel derrière. Observé en
+            # direct : entrée puis sortie en 8 secondes avec SMA20 == SMA80 à
+            # l'exécution. Tant que l'écart reste sous ce seuil, on garde le
+            # dernier signal décisif au lieu de le traiter comme un vrai
+            # renversement.
+            spread_pct = (fast_sma - slow_sma) / slow_sma * 100 if slow_sma else 0.0
+            if spread_pct >= self.crossover_threshold_pct:
+                signal = 'bullish'
+            elif spread_pct <= -self.crossover_threshold_pct:
+                signal = 'bearish'
+            else:
+                signal = self._last_signal
+            crossed = signal is not None and signal != self._last_signal
             self._last_signal = signal
 
             if self.position_qty > 0:
