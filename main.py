@@ -2,13 +2,14 @@
 import asyncio, logging, signal
 from config import PAPER_TRADING_MODE, TELEGRAM_TOKEN, TELEGRAM_CHAT_ID, API_KEYS
 from execution.live_order_manager import LiveOrderManager
+from execution.futures_order_manager import FuturesOrderManager
 from engine.data_engine import DataEngine
 from engine.triangular_engine import TriangularEngine
 from engine.cross_exchange_engine import CrossExchangeEngine
 from engine.market_making_engine import MarketMakingEngine
 from engine.stat_arb_engine import StatArbEngine
 from engine.trend_following_engine import TrendFollowingEngine
-from engine.funding_rate_engine import FundingRateEngine
+from engine.funding_arb_engine import FundingArbEngine
 from connectors.binance_connector import BinanceConnector
 from connectors.okx_connector import OkxConnector
 from utils.notifier import Notifier
@@ -60,10 +61,13 @@ async def main_bot():
     stat_arb_engine = StatArbEngine(data_engine, order_manager, notifier, trade_logger)
     trend_engine = TrendFollowingEngine(data_engine, order_manager, notifier, trade_logger)
 
-    # Funding rate : monitoring seulement, pas de DataEngine/WebSocket --
-    # se signale une fois et reste inactif si BINANCE_FUTURES_API_KEY/SECRET
-    # ne sont pas configurées (clés séparées du testnet spot).
-    funding_rate_engine = FundingRateEngine(notifier, trade_logger)
+    # Arbitrage de funding rate (cash-and-carry delta-neutre) : connexion
+    # dédiée au testnet futures (BinanceFutures), pas de DataEngine/WebSocket
+    # -- se signale une fois et reste en monitoring seulement si
+    # BINANCE_FUTURES_API_KEY/SECRET ne sont pas configurées (clés séparées
+    # du testnet spot) ou si FUNDING_ARB_ENABLED=False.
+    futures_order_manager = FuturesOrderManager(notifier)
+    funding_arb_engine = FundingArbEngine(order_manager, futures_order_manager, notifier, trade_logger)
 
     tasks = [
         asyncio.create_task(binance_connector.run()),
@@ -71,7 +75,7 @@ async def main_bot():
         asyncio.create_task(market_making_engine.run()),
         asyncio.create_task(stat_arb_engine.run()),
         asyncio.create_task(trend_engine.run()),
-        asyncio.create_task(funding_rate_engine.run()),
+        asyncio.create_task(funding_arb_engine.run()),
     ]
 
     # Arbitrage inter-exchange (Binance <-> OKX) en parallèle du triangulaire,

@@ -101,10 +101,41 @@ TREND_STOP_LOSS_PCT = 10.0
 # au moment de la sortie).
 TREND_CROSSOVER_THRESHOLD_PCT = 0.03
 
-# --- FUNDING RATE (futures perpétuels -- MONITORING SEULEMENT pour l'instant) ---
-# Pas d'exécution automatique de positions à effet de levier tant que ce n'a
-# pas été testé et validé étape par étape comme le reste du bot, avec de
-# vraies clés testnet futures. Se contente pour l'instant de surveiller et
-# d'alerter quand le taux dépasse le seuil.
+# --- FUNDING RATE / ARBITRAGE DE FINANCEMENT (cash-and-carry delta-neutre) ---
+# Nécessite BINANCE_FUTURES_API_KEY/SECRET (testnet.binancefuture.com, séparé
+# du testnet spot). Sans ces clés, ou si FUNDING_ARB_ENABLED=False, se
+# comporte en monitoring/alerte seulement -- aucune exécution.
 FUNDING_RATE_SYMBOL = "BTC/USDT:USDT"
 FUNDING_RATE_ALERT_APR_PCT = 15.0
+
+# Active l'exécution réelle (spot long + perp short). Mettre à False repasse
+# instantanément en monitoring seulement, sans toucher au reste du code.
+FUNDING_ARB_ENABLED = True
+FUNDING_ARB_SYMBOL_SPOT = "BTC/USDC"
+FUNDING_ARB_SYMBOL_PERP = FUNDING_RATE_SYMBOL
+# Taille FIXE (pas de réinvestissement composé comme le triangulaire/cross) :
+# ce capital sert aussi de marge sur une position à effet de levier, donc
+# l'augmenter augmente aussi le risque de liquidation, pas seulement le gain
+# potentiel -- une décision à prendre explicitement, pas à automatiser.
+FUNDING_ARB_TRADE_SIZE_USD = MAX_TRADE_SIZE_USD
+# Levier volontairement bas : la position est censée être neutre au prix,
+# mais l'exchange évalue la jambe perpétuelle SEULE pour la marge/liquidation.
+FUNDING_ARB_LEVERAGE = 2
+# N'entre que si le funding est également au-dessus du seuil d'alerte --
+# pas la peine d'ouvrir une position à effet de levier pour un rendement
+# qu'on ne jugerait même pas notable en monitoring.
+FUNDING_ARB_ENTRY_APR_PCT = FUNDING_RATE_ALERT_APR_PCT
+# Sort si le funding retombe sous ce seuil (bien plus bas que l'entrée) :
+# ne vaut plus le risque de base/marge pour le rendement restant.
+FUNDING_ARB_EXIT_APR_PCT = 3.0
+# Écart spot/perpétuel (en %) au-delà duquel on refuse d'entrer (couverture
+# déjà dégradée avant même de commencer) ou on sort si ça se creuse pendant
+# qu'on est en position.
+FUNDING_ARB_MAX_ENTRY_BASIS_PCT = 0.3
+FUNDING_ARB_MAX_HOLD_BASIS_PCT = 0.6
+# Distance minimale (en %) entre le prix mark et le prix de liquidation de la
+# jambe perpétuelle avant de sortir en urgence, indépendamment du funding.
+FUNDING_ARB_MARGIN_SAFETY_PCT = 20.0
+# Le funding ne change que toutes les 8h, mais le risque de marge/base doit
+# être surveillé bien plus souvent que ça.
+FUNDING_ARB_POLL_INTERVAL_SEC = 60
