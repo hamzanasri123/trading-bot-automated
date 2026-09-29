@@ -124,29 +124,39 @@ class FundingArbEngine:
             await self.futures_manager.close()
 
     async def _recover_existing_position(self):
-        # Si le process a redémarré alors qu'une position était déjà ouverte
-        # (crash, redéploiement...), on la retrouve plutôt que de repartir à
-        # zéro -- sinon on risquerait d'en ouvrir une seconde par-dessus, ou
-        # d'ignorer une position réelle dont personne ne surveille plus le
-        # risque de marge. Le coût d'entrée reconstruit est approximatif.
+        # Une position perp déjà ouverte au démarrage n'est PAS forcément la
+        # nôtre : ce moteur n'a aucun journal persistant entre redémarrages,
+        # donc impossible de distinguer une position qu'il a lui-même ouverte
+        # d'une position déjà présente sur le compte pour une autre raison
+        # (démo Binance pré-approvisionnée, test manuel...).
+        #
+        # Deviner un montant spot "couvert" à partir du solde spot total
+        # serait dangereux et FAUX dans ce bot précis : ce solde inclut aussi
+        # le BTC utilisé par d'autres moteurs sans aucun rapport (le pont
+        # BTC/USDC du triangulaire, l'inventaire du cross-exchange...). Un
+        # test réel a confirmé le problème : un solde spot de 1.0058 BTC
+        # "adopté" comme couverture d'une position perp de seulement 0.1 BTC
+        # -- un mismatch de 10x qui aurait fait vendre bien plus de spot que
+        # prévu à la sortie, perturbant les autres stratégies au passage.
+        #
+        # On préfère donc alerter et NE RIEN TOUCHER : in_position reste
+        # False, ce moteur ignore cette position existante plutôt que de
+        # l'adopter avec un montant potentiellement faux.
         position = await self.futures_manager.get_position(self.perp_symbol)
         if not position or not position.get('contracts'):
             return
-        self.in_position = True
-        self.perp_amount = position.get('contracts')
-        self.perp_entry_avg = position.get('entryPrice') or 0.0
-        spot_balance = await self._order_manager.get_balance('Binance', self.base_asset)
-        self.spot_amount = spot_balance if spot_balance else self.perp_amount
-        self.spot_entry_cost_usd = self.spot_amount * self.perp_entry_avg
-        self.entry_time_ms = int(time.time() * 1000)
-        self.logger.warning(
-            f"[FundingArb] Resumed after restart: found an existing perp position "
-            f"({self.perp_amount} {self.perp_symbol}). Resuming monitoring -- entry cost is "
-            f"an approximation, and funding tracking restarts from now (pre-restart funding is not counted)."
+        self.logger.critical(
+            f"[FundingArb] Found an existing {self.perp_symbol} position at startup "
+            f"({position.get('contracts')} contracts, side={position.get('side')}, "
+            f"entry={position.get('entryPrice')}) that this engine did not open and has no record of. "
+            f"NOT adopting it automatically -- guessing its hedge amount from the spot balance would be "
+            f"unreliable since that balance is shared with other engines. Manual review recommended."
         )
         await self.notifier.send_message(
-            f"⚠️ *Funding Arb Resumed* ⚠️\nFound an existing open position after restart "
-            f"({self.perp_amount:.6f} {self.perp_symbol}).\nResuming monitoring; entry P&L baseline is approximate."
+            f"⚠️ *Funding Arb: Unexpected Position* ⚠️\n"
+            f"Found an existing {self.perp_symbol} position at startup "
+            f"({position.get('contracts')} contracts, side={position.get('side')}) that this bot did not open.\n"
+            f"NOT touching it automatically -- please review it manually on your Binance Demo Trading account."
         )
 
     async def _tick(self):
