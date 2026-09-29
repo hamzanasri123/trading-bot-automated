@@ -13,6 +13,13 @@ API_KEYS = {
         'apiKey': os.environ.get('BINANCE_API_KEY', ''),
         'secret': os.environ.get('BINANCE_API_SECRET', ''),
     },
+    # Testnet futures (testnet.binancefuture.com) est un environnement
+    # SÉPARÉ du testnet spot (testnet.binance.vision) -- les clés spot
+    # ci-dessus ne fonctionnent pas ici. Nécessite une inscription à part.
+    'BinanceFutures': {
+        'apiKey': os.environ.get('BINANCE_FUTURES_API_KEY', ''),
+        'secret': os.environ.get('BINANCE_FUTURES_API_SECRET', ''),
+    },
     'OKX': {
         'apiKey': os.environ.get('OKX_API_KEY', ''),
         'secret': os.environ.get('OKX_API_SECRET', ''),
@@ -63,3 +70,34 @@ MM_MAX_INVENTORY_USD = MAX_TRADE_SIZE_USD * 3
 # détenu dépasse ce % de l'exposition maximale, on liquide immédiatement au
 # marché plutôt que d'attendre un retour à l'équilibre qui n'arrive pas.
 MM_STOP_LOSS_PCT = 20.0
+
+# --- ARBITRAGE STATISTIQUE (retour à la moyenne, spot uniquement) ---
+STAT_ARB_SYMBOL = "ETH/BTC"
+STAT_ARB_PLATFORM = "Binance"
+# Nombre minimum d'échantillons de prix avant de calculer une moyenne/écart-
+# type fiable. En dessous, la stratégie reste inactive (pas assez d'historique).
+STAT_ARB_MIN_SAMPLES = 60
+# Écart-type au-delà duquel on considère le prix anormalement dévié (déclenche
+# un achat, en pariant sur un retour vers la moyenne).
+STAT_ARB_ENTRY_ZSCORE = 2.0
+# Écart-type en dessous duquel on considère que le retour à la moyenne a eu
+# lieu (déclenche la revente pour réaliser le profit).
+STAT_ARB_EXIT_ZSCORE = 0.3
+STAT_ARB_TRADE_SIZE_USD = MAX_TRADE_SIZE_USD
+STAT_ARB_STOP_LOSS_PCT = 15.0
+
+# --- SUIVI DE TENDANCE (directionnel, spot uniquement, long-only) ---
+TREND_SYMBOL = "BTC/USDC"
+TREND_PLATFORM = "Binance"
+TREND_FAST_WINDOW = 20
+TREND_SLOW_WINDOW = 80
+TREND_TRADE_SIZE_USD = MAX_TRADE_SIZE_USD
+TREND_STOP_LOSS_PCT = 10.0
+
+# --- FUNDING RATE (futures perpétuels -- MONITORING SEULEMENT pour l'instant) ---
+# Pas d'exécution automatique de positions à effet de levier tant que ce n'a
+# pas été testé et validé étape par étape comme le reste du bot, avec de
+# vraies clés testnet futures. Se contente pour l'instant de surveiller et
+# d'alerter quand le taux dépasse le seuil.
+FUNDING_RATE_SYMBOL = "BTC/USDT:USDT"
+FUNDING_RATE_ALERT_APR_PCT = 15.0

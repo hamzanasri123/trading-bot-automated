@@ -6,6 +6,9 @@ from engine.data_engine import DataEngine
 from engine.triangular_engine import TriangularEngine
 from engine.cross_exchange_engine import CrossExchangeEngine
 from engine.market_making_engine import MarketMakingEngine
+from engine.stat_arb_engine import StatArbEngine
+from engine.trend_following_engine import TrendFollowingEngine
+from engine.funding_rate_engine import FundingRateEngine
 from connectors.binance_connector import BinanceConnector
 from connectors.okx_connector import OkxConnector
 from utils.notifier import Notifier
@@ -50,10 +53,25 @@ async def main_bot():
     # DOT/USDC -- déjà souscrit via triangular_symbols, pas de flux en plus.
     market_making_engine = MarketMakingEngine(data_engine, order_manager, notifier, trade_logger, platform='Binance', symbol='DOT/USDC')
 
+    # Arbitrage statistique (retour à la moyenne) sur ETH/BTC et suivi de
+    # tendance (SMA crossover) sur BTC/USDC -- les deux réutilisent des flux
+    # déjà souscrits via triangular_symbols (ETH/BTC vient des legs, BTC/USDC
+    # est la paire pont), aucun nouvel abonnement WebSocket nécessaire.
+    stat_arb_engine = StatArbEngine(data_engine, order_manager, notifier, trade_logger)
+    trend_engine = TrendFollowingEngine(data_engine, order_manager, notifier, trade_logger)
+
+    # Funding rate : monitoring seulement, pas de DataEngine/WebSocket --
+    # se signale une fois et reste inactif si BINANCE_FUTURES_API_KEY/SECRET
+    # ne sont pas configurées (clés séparées du testnet spot).
+    funding_rate_engine = FundingRateEngine(notifier, trade_logger)
+
     tasks = [
         asyncio.create_task(binance_connector.run()),
         asyncio.create_task(triangular_engine.run()),
         asyncio.create_task(market_making_engine.run()),
+        asyncio.create_task(stat_arb_engine.run()),
+        asyncio.create_task(trend_engine.run()),
+        asyncio.create_task(funding_rate_engine.run()),
     ]
 
     # Arbitrage inter-exchange (Binance <-> OKX) en parallèle du triangulaire,
