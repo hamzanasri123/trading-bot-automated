@@ -41,15 +41,24 @@ class TriangularEngine:
         self.pair_quote = "ETH/USDC"    # USDC <-> ETH
 
         self.trade_size_usdc = MAX_TRADE_SIZE_USD
-        # Réinvestissement : sur un trade gagnant, on ajoute ce pourcentage du
-        # gain à la taille du prochain trade (compounding progressif). Capé à
-        # 10x la taille de départ pour éviter un emballement incontrôlé si une
-        # série de gains s'enchaîne.
+        # Sizing symétrique : sur un cycle gagnant, on ajoute ce pourcentage du
+        # gain à la taille du prochain trade (compounding progressif) ; sur un
+        # cycle perdant, on retire ce même pourcentage de la perte -- sans quoi
+        # le compounding grossirait sur les séries gagnantes sans jamais se
+        # réduire sur les séries perdantes qui suivraient.
         self.reinvest_pct = 0.5
+        self.min_trade_size_usdc = MAX_TRADE_SIZE_USD
         self.max_trade_size_usdc = MAX_TRADE_SIZE_USD * 10
         # Marge de sécurité au-delà des 3 frais taker, pour absorber le slippage
         # et l'imprécision du calcul en top-of-book.
         self.min_profit_pct = 0.15
+
+        # Coupe-circuit : si le P&L réel cumulé de la session (calculé à partir
+        # des montants effectivement exécutés, pas des estimations) descend
+        # sous ce seuil, le trading s'arrête et ne reprend plus tout seul.
+        self.session_pnl_usd = 0.0
+        self.max_session_loss_usd = MAX_TRADE_SIZE_USD * 10
+        self._halted = False
 
         self._is_trading_enabled = True
         self._cooldown = 5
@@ -70,7 +79,7 @@ class TriangularEngine:
             if current_time - self._last_print_time > self._print_interval:
                 self._print_status()
                 self._last_print_time = current_time
-            if not self._is_trading_enabled:
+            if self._halted or not self._is_trading_enabled:
                 continue
 
             book_bridge, book_leg, book_quote = self._book(self.pair_bridge), self._book(self.pair_leg), self._book(self.pair_quote)
@@ -164,7 +173,22 @@ class TriangularEngine:
                 held_amount = received_cost if received_cost else filled * (order.get('average') or 0)
 
         if aborted:
-            await self._unwind(executed)
+            recovered_usdc = await self._unwind(executed)
+            if recovered_usdc is not None:
+                real_profit_usd = recovered_usdc - self.trade_size_usdc
+                real_profit_pct = (real_profit_usd / self.trade_size_usdc) * 100
+                self.logger.info(f"[Triangular] Cycle unwound. Real P&L: ${real_profit_usd:.4f} ({real_profit_pct:.4f}%)")
+                if self.trade_logger:
+                    self.trade_logger.log_trade(
+                        event_type='TRIANGULAR_UNWOUND', platform_buy=self.platform, platform_sell=self.platform,
+                        symbol=f"{self.pair_bridge}|{self.pair_leg}|{self.pair_quote}", volume=self.trade_size_usdc,
+                        profit_usd=real_profit_usd, profit_pct=real_profit_pct,
+                        details=f"direction={direction}, partial legs=" + ",".join(f"{l['symbol']}:{l['order']['id']}" for l in executed)
+                    )
+                await self._apply_sizing_and_breaker(real_profit_usd)
+            # Si recovered_usdc est None, le dénouement a lui-même échoué : déjà
+            # alerté comme TRIANGULAR_UNHEDGED dans _unwind, aucun P&L fiable à
+            # calculer ici (position réellement inconnue, nécessite une vérif manuelle).
         else:
             final_usdc = held_amount
             real_profit_usd = final_usdc - self.trade_size_usdc
@@ -178,25 +202,40 @@ class TriangularEngine:
                     profit_usd=real_profit_usd, profit_pct=real_profit_pct,
                     details=f"direction={direction}, legs=" + ",".join(f"{l['symbol']}:{l['order']['id']}" for l in executed)
                 )
-            # Réinvestissement : sur un trade gagnant, on ajoute une part du gain
-            # à la taille du prochain trade (capé pour éviter un emballement).
-            if real_profit_usd > 0:
-                old_size = self.trade_size_usdc
-                new_size = min(old_size + real_profit_usd * self.reinvest_pct, self.max_trade_size_usdc)
-                self.trade_size_usdc = new_size
-                self.logger.info(f"[Triangular] Reinvesting {self.reinvest_pct*100:.0f}% of the gain: next trade size ${old_size:.4f} -> ${new_size:.4f}")
+            await self._apply_sizing_and_breaker(real_profit_usd)
 
         asyncio.create_task(self.cooldown_trading())
+
+    async def _apply_sizing_and_breaker(self, real_profit_usd):
+        # Sizing symétrique : la taille du prochain trade bouge de reinvest_pct
+        # du P&L réel du cycle qui vient de se terminer, gain ou perte, dans les
+        # bornes [min_trade_size_usdc, max_trade_size_usdc].
+        self.session_pnl_usd += real_profit_usd
+        old_size = self.trade_size_usdc
+        new_size = old_size + real_profit_usd * self.reinvest_pct
+        new_size = max(self.min_trade_size_usdc, min(new_size, self.max_trade_size_usdc))
+        self.trade_size_usdc = new_size
+        if abs(new_size - old_size) > 1e-9:
+            self.logger.info(f"[Triangular] Sizing adjusted: ${old_size:.4f} -> ${new_size:.4f} (cycle P&L ${real_profit_usd:+.4f}, session P&L ${self.session_pnl_usd:+.4f})")
+
+        if not self._halted and self.session_pnl_usd <= -self.max_session_loss_usd:
+            self._halted = True
+            self.logger.critical(f"[Triangular] CIRCUIT BREAKER TRIGGERED: session P&L ${self.session_pnl_usd:.4f} <= -${self.max_session_loss_usd:.4f}. Trading halted.")
+            await self.notifier.send_message(f"🛑 *CIRCUIT BREAKER* 🛑\nSession P&L: ${self.session_pnl_usd:.4f}\nTrading has been halted and will NOT resume automatically. Restart the bot after review.")
 
     async def _unwind(self, executed_legs):
         # Si le cycle s'arrête en cours de route, on détient une devise intermédiaire
         # sans couverture : on la revend/rachète immédiatement dans le sens inverse,
         # à partir du montant RÉELLEMENT reçu (pas d'une estimation), pour revenir
         # vers l'USDC plutôt que de laisser une position non voulue.
+        # Retourne le montant USDC effectivement récupéré, ou None si le
+        # dénouement lui-même a échoué (position dans un état inconnu).
         if not executed_legs:
-            return
+            return None
         self.logger.warning(f"[Triangular] UNWINDING {len(executed_legs)} executed leg(s) after a partial cycle failure.")
-        for leg in reversed(executed_legs):
+        recovered_usdc = None
+        reversed_legs = list(reversed(executed_legs))
+        for idx, leg in enumerate(reversed_legs):
             symbol, side, order = leg['symbol'], leg['side'], leg['order']
             filled = order.get('filled') or 0
             if side == 'buy':
@@ -210,8 +249,21 @@ class TriangularEngine:
                 await self.notifier.send_message(f"🔥 *UNHEDGED POSITION (Triangular)* 🔥\nFailed to unwind {symbol} after a partial cycle failure. Manual intervention required.")
                 if self.trade_logger:
                     self.trade_logger.log_trade(event_type='TRIANGULAR_UNHEDGED', platform_buy=self.platform, platform_sell=self.platform, symbol=symbol, volume=filled, details="Failed to unwind after partial cycle failure")
+                return None
+
+            # Le dernier ordre de dénouement (inversion de la toute première jambe)
+            # est celui qui revient effectivement en USDC.
+            if idx == len(reversed_legs) - 1:
+                recovered_usdc = unwind_result.get('cost')
+                if recovered_usdc is None:
+                    recovered_usdc = unwind_result.get('filled', 0) * (unwind_result.get('average') or 0)
+
+        return recovered_usdc
 
     async def cooldown_trading(self):
         await asyncio.sleep(self._cooldown)
+        if self._halted:
+            self.logger.info("[Triangular] Trading remains halted (circuit breaker).")
+            return
         self.logger.info(f"[Triangular] Trading re-enabled after {self._cooldown}s cooldown.")
         self._is_trading_enabled = True
