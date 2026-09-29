@@ -140,17 +140,24 @@ class MarketMakingEngine:
         bid_price = skewed_mid * (1 - self.half_spread_pct / 100)
         ask_price = skewed_mid * (1 + self.half_spread_pct / 100)
 
+        # Marge de sécurité au-dessus du minimum réel de l'exchange : sans
+        # elle, l'arrondi de précision peut faire retomber l'ordre juste sous
+        # le seuil et se faire rejeter (vu en test : 4.99 USDC rejeté pour un
+        # minimum de 5 USDC sur DOT/USDC).
+        min_notional = self._order_manager.get_min_notional(self.platform, self.symbol)
+        effective_notional = max(self.quote_notional_usd, min_notional * 1.15)
+
         inventory_usd = self.inventory_qty * mid_price
         can_buy_more = inventory_usd < self.max_inventory_usd
 
         if can_buy_more:
-            bid_amount = self._order_manager.round_amount(self.platform, self.symbol, self.quote_notional_usd / bid_price)
+            bid_amount = self._order_manager.round_amount(self.platform, self.symbol, effective_notional / bid_price)
             order = await self._order_manager.create_limit_order(self.platform, self.symbol, 'buy', bid_amount, bid_price, post_only=True)
             if order and order.get('id'):
                 self.active_bid = {'id': order['id'], 'price': bid_price, 'amount': bid_amount}
 
-        if self.inventory_qty > 0:
-            ask_amount = self._order_manager.round_amount(self.platform, self.symbol, min(self.quote_notional_usd / ask_price, self.inventory_qty))
+        if self.inventory_qty > 0 and self.inventory_qty * ask_price >= min_notional:
+            ask_amount = self._order_manager.round_amount(self.platform, self.symbol, min(effective_notional / ask_price, self.inventory_qty))
             if ask_amount > 0:
                 order = await self._order_manager.create_limit_order(self.platform, self.symbol, 'sell', ask_amount, ask_price, post_only=True)
                 if order and order.get('id'):

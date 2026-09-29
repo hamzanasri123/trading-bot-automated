@@ -66,6 +66,19 @@ class LiveOrderManager:
         except Exception:
             return amount
 
+    def get_min_notional(self, platform: str, symbol: str) -> float:
+        # Valeur minimale (en devise de cotation) qu'un ordre doit atteindre
+        # pour être accepté par l'exchange. Sans marge de sécurité au-dessus,
+        # l'arrondi de précision peut faire retomber un ordre juste sous ce
+        # seuil et se faire rejeter (code -1013 "Filter failure: NOTIONAL" sur
+        # Binance).
+        if platform not in self.exchanges: return 0.0
+        try:
+            market = self.exchanges[platform].markets.get(symbol, {})
+            return market.get('limits', {}).get('cost', {}).get('min') or 0.0
+        except Exception:
+            return 0.0
+
     async def get_balance(self, platform: str, currency: str):
         if platform not in self.exchanges: return None
         try:
