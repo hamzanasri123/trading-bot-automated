@@ -23,7 +23,7 @@ async def main_bot():
 
     await order_manager.initialize()
 
-    triangular_legs = ["ETH", "XRP", "SOL"]
+    triangular_legs = ["ETH", "XRP", "SOL", "NEAR"]
 
     logging.info("--- Initial Balance Check ---")
     for platform in order_manager.exchanges.keys():
