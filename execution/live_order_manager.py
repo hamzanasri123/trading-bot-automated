@@ -188,6 +188,13 @@ class LiveOrderManager:
         except Exception as e:
             self.logger.error(f"Failed to fetch status for order {order_id} on {platform}: {e}"); return None
 
+    async def fetch_open_orders(self, platform: str, symbol: str):
+        if platform not in self.exchanges: return []
+        try:
+            return await self.exchanges[platform].fetch_open_orders(symbol)
+        except Exception as e:
+            self.logger.error(f"Failed to fetch open orders for {symbol} on {platform}: {e}"); return []
+
     async def close_all(self):
         self.logger.info("Closing all exchange connections...")
         for name, instance in self.exchanges.items():

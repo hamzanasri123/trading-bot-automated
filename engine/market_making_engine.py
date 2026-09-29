@@ -55,6 +55,7 @@ class MarketMakingEngine:
 
         self.active_bid = None  # {'id', 'price', 'amount'}
         self.active_ask = None
+        self._alerted_stuck_order_ids = set()
 
         self._is_trading_enabled = True
         self._last_requote_time = 0
@@ -74,7 +75,26 @@ class MarketMakingEngine:
     def _fee_pct(self):
         return self._order_manager.get_fees(self.platform).get('maker', 0.1)
 
+    async def _cleanup_stale_orders(self):
+        # Ce moteur redémarre toujours sans mémoire des ordres d'une session
+        # précédente (self.active_bid/ask repartent à None). Si un cancel
+        # avait échoué avant un crash/redémarrage (ou avant le correctif de
+        # vérification de cancel), l'ordre resterait ouvert sur l'exchange
+        # sans que personne ne le suive -- jusqu'à, un jour, déclencher un
+        # vrai MAX_NUM_ORDERS côté compte qui bloque même d'autres moteurs
+        # sur d'autres paires. On repart donc propre à chaque lancement.
+        if not hasattr(self._order_manager, 'fetch_open_orders'):
+            return
+        open_orders = await self._order_manager.fetch_open_orders(self.platform, self.symbol)
+        if not open_orders:
+            return
+        self.logger.warning(f"[MarketMaking] Found {len(open_orders)} pre-existing open order(s) on {self.symbol} at startup -- cancelling before quoting.")
+        for order in open_orders:
+            await self._order_manager.cancel_order(self.platform, order['id'], self.symbol)
+        await self.notifier.send_message(f"⚠️ *Market Making Startup Cleanup* ⚠️\nCancelled {len(open_orders)} leftover open order(s) on {self.symbol} from a previous session.")
+
     async def run(self):
+        await self._cleanup_stale_orders()
         self.logger.info(f"Market Making Engine is running on {self.platform} {self.symbol}. Half-spread: {self.half_spread_pct}%, max inventory: ${self.max_inventory_usd}.")
         while True:
             try:
@@ -127,12 +147,18 @@ class MarketMakingEngine:
         await self._check_fill(self.active_bid, is_buy=True)
         await self._check_fill(self.active_ask, is_buy=False)
 
-        if self.active_bid:
-            await self._order_manager.cancel_order(self.platform, self.active_bid['id'], self.symbol)
+        if self.active_bid and await self._clear_order(self.active_bid, is_buy=True):
             self.active_bid = None
-        if self.active_ask:
-            await self._order_manager.cancel_order(self.platform, self.active_ask['id'], self.symbol)
+        if self.active_ask and await self._clear_order(self.active_ask, is_buy=False):
             self.active_ask = None
+
+        if self.active_bid or self.active_ask:
+            # Un ordre est resté coincé (cancel + retry ont échoué) : on ne
+            # pose rien de nouveau ce cycle plutôt que d'empiler un ordre de
+            # plus par-dessus un qu'on ne maîtrise déjà plus -- c'est
+            # exactement ce type de fuite qui a fini par déclencher un vrai
+            # MAX_NUM_ORDERS sur le compte après une longue session.
+            return
 
         skew = min(self.inventory_qty * mid_price / self.max_inventory_usd, 1.0) if self.max_inventory_usd > 0 else 0.0
         skewed_mid = mid_price * (1 - skew * self.max_skew_pct / 100)
@@ -189,13 +215,43 @@ class MarketMakingEngine:
                 self.trade_logger.log_trade(event_type='MM_SELL_FILLED', platform_sell=self.platform, symbol=self.symbol, volume=filled, sell_price=price, profit_usd=realized_pnl, details=f"order_id={active_order['id']}")
             await self._check_breaker()
 
+    async def _clear_order(self, order_info, is_buy) -> bool:
+        """
+        Annule un ordre actif en vérifiant le résultat au lieu de faire
+        confiance à cancel_order() à l'aveugle. Un cancel qui échoue peut
+        vouloir dire soit que l'ordre a été rempli/annulé entre-temps (rien
+        à faire, ou un fill à absorber), soit qu'il est encore bien ouvert
+        sur l'exchange et qu'on vient de perdre sa trace -- exactement le
+        genre de fuite d'ordres non suivis qui peut, sur une longue session,
+        finir par déclencher un vrai MAX_NUM_ORDERS côté exchange et bloquer
+        d'autres moteurs.
+
+        Retourne True si le slot (bid/ask) est maintenant réellement libre.
+        """
+        if await self._order_manager.cancel_order(self.platform, order_info['id'], self.symbol):
+            return True
+
+        status = await self._order_manager.fetch_order_status(self.platform, order_info['id'], self.symbol)
+        if status and status.get('status') == 'closed':
+            await self._check_fill(order_info, is_buy)
+            return True
+        if status and status.get('status') in ('canceled', 'expired', 'rejected'):
+            return True
+
+        if await self._order_manager.cancel_order(self.platform, order_info['id'], self.symbol):
+            return True
+
+        self.logger.critical(f"[MarketMaking] Could not cancel order {order_info['id']} on {self.platform} ({self.symbol}) after a retry -- it may still be resting on the exchange. Will keep retrying next cycle instead of losing track of it or placing a duplicate.")
+        if order_info['id'] not in self._alerted_stuck_order_ids:
+            self._alerted_stuck_order_ids.add(order_info['id'])
+            await self.notifier.send_message(f"🔥 *STUCK ORDER (Market Making)* 🔥\nCould not cancel order {order_info['id']} ({self.symbol}) after a retry. It may still be open on the exchange. Manual check recommended.")
+        return False
+
     async def _stop_loss_liquidate(self, mid_price):
         self.logger.critical(f"[MarketMaking] STOP-LOSS: unrealized loss on {self.inventory_qty:.6f} {self.base_asset} exceeds {self.stop_loss_pct}% of max inventory. Liquidating at market.")
-        if self.active_bid:
-            await self._order_manager.cancel_order(self.platform, self.active_bid['id'], self.symbol)
+        if self.active_bid and await self._clear_order(self.active_bid, is_buy=True):
             self.active_bid = None
-        if self.active_ask:
-            await self._order_manager.cancel_order(self.platform, self.active_ask['id'], self.symbol)
+        if self.active_ask and await self._clear_order(self.active_ask, is_buy=False):
             self.active_ask = None
 
         qty = self.inventory_qty
@@ -222,11 +278,9 @@ class MarketMakingEngine:
         # celui-ci laisse des ordres limit posés sur l'exchange -- il faut les
         # annuler explicitement à l'arrêt, sinon ils restent actifs sans
         # supervision une fois le bot coupé.
-        if self.active_bid:
-            await self._order_manager.cancel_order(self.platform, self.active_bid['id'], self.symbol)
+        if self.active_bid and await self._clear_order(self.active_bid, is_buy=True):
             self.active_bid = None
-        if self.active_ask:
-            await self._order_manager.cancel_order(self.platform, self.active_ask['id'], self.symbol)
+        if self.active_ask and await self._clear_order(self.active_ask, is_buy=False):
             self.active_ask = None
         self.logger.info("[MarketMaking] Outstanding orders cancelled on shutdown.")
 
@@ -236,10 +290,8 @@ class MarketMakingEngine:
             self.logger.critical(f"[MarketMaking] CIRCUIT BREAKER TRIGGERED: session P&L ${self.session_pnl_usd:.4f} <= -${self.max_session_loss_usd:.4f}. Trading halted.")
             # Retire tout ordre encore posé : pas de raison de continuer à
             # coter une fois le trading arrêté.
-            if self.active_bid:
-                await self._order_manager.cancel_order(self.platform, self.active_bid['id'], self.symbol)
+            if self.active_bid and await self._clear_order(self.active_bid, is_buy=True):
                 self.active_bid = None
-            if self.active_ask:
-                await self._order_manager.cancel_order(self.platform, self.active_ask['id'], self.symbol)
+            if self.active_ask and await self._clear_order(self.active_ask, is_buy=False):
                 self.active_ask = None
             await self.notifier.send_message(f"🛑 *CIRCUIT BREAKER (Market Making)* 🛑\nSession P&L: ${self.session_pnl_usd:.4f}\nTrading has been halted and will NOT resume automatically. Restart the bot after review.")
