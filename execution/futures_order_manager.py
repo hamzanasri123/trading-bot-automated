@@ -5,10 +5,17 @@ from config import API_KEYS, PAPER_TRADING_MODE
 
 class FuturesOrderManager:
     """
-    Connexion dédiée au testnet futures Binance (USD-M), séparée de
-    LiveOrderManager (spot) -- ce sont deux comptes/clés différents
-    (testnet.binancefuture.com vs testnet.binance.vision). Sert de jambe
-    d'exécution "perpétuel" pour FundingArbEngine (short perp + long spot).
+    Connexion dédiée au compte "Demo Trading" futures Binance (USD-M),
+    séparée de LiveOrderManager (spot) -- comptes/clés différents
+    (demo.binance.com vs testnet.binance.vision). Sert de jambe d'exécution
+    "perpétuel" pour FundingArbEngine (short perp + long spot).
+
+    Binance a retiré le mode testnet/sandbox pour les futures (ccxt lève
+    NotSupported sur tout appel privé via set_sandbox_mode + l'ancienne URL
+    testnet.binancefuture.com -- voir https://t.me/ccxt_announcements/92).
+    Le remplacement est ce compte "Demo Trading" séparé, activé via
+    exchange.enable_demo_trading(True) plutôt que set_sandbox_mode(True),
+    avec ses propres clés API générées sur demo.binance.com.
 
     Même discipline que LiveOrderManager : ordres MARKET vérifiés
     (remplissage réel confirmé, jamais juste "accepté"). En plus, ici,
@@ -29,14 +36,22 @@ class FuturesOrderManager:
     async def initialize(self):
         keys = API_KEYS['BinanceFutures']
         self.exchange = ccxt.binanceusdm({'apiKey': keys['apiKey'], 'secret': keys['secret'], 'enableRateLimit': True})
-        if PAPER_TRADING_MODE and self.exchange.has.get('sandbox', False):
-            self.exchange.set_sandbox_mode(True)
+        if PAPER_TRADING_MODE:
+            # set_sandbox_mode(True) route vers testnet.binancefuture.com,
+            # que ccxt bloque désormais explicitement pour les futures
+            # (NotSupported: "testnet/sandbox mode is not supported for
+            # futures anymore" -- https://t.me/ccxt_announcements/92).
+            # Binance a remplacé ça par un compte "Demo Trading" séparé
+            # (demo-fapi.binance.com), activé via cette méthode dédiée --
+            # nécessite des clés API générées sur demo.binance.com, PAS les
+            # anciennes clés testnet.binancefuture.com.
+            self.exchange.enable_demo_trading(True)
         await self.exchange.load_markets(reload=True)
         try:
             await self.exchange.set_position_mode(False)  # force one-way (pas hedge mode)
         except Exception as e:
             self.logger.warning(f"Could not force one-way position mode (may already be set, or unsupported on this account): {e}")
-        self.logger.info(f"FuturesOrderManager connected to Binance USD-M Futures ({'testnet' if PAPER_TRADING_MODE else 'LIVE'}).")
+        self.logger.info(f"FuturesOrderManager connected to Binance USD-M Futures ({'Demo Trading' if PAPER_TRADING_MODE else 'LIVE'}).")
 
     async def set_leverage(self, symbol: str, leverage: int) -> bool:
         try:

@@ -13,9 +13,12 @@ API_KEYS = {
         'apiKey': os.environ.get('BINANCE_API_KEY', ''),
         'secret': os.environ.get('BINANCE_API_SECRET', ''),
     },
-    # Testnet futures (testnet.binancefuture.com) est un environnement
-    # SÉPARÉ du testnet spot (testnet.binance.vision) -- les clés spot
-    # ci-dessus ne fonctionnent pas ici. Nécessite une inscription à part.
+    # "Demo Trading" futures (demo.binance.com) est un environnement SÉPARÉ
+    # du testnet spot (testnet.binance.vision) -- les clés spot ci-dessus ne
+    # fonctionnent pas ici. Nécessite des clés générées séparément sur
+    # https://demo.binance.com/en/my/settings/api-management (PAS
+    # testnet.binancefuture.com, dont le mode testnet/sandbox pour les
+    # futures a été retiré par Binance -- https://t.me/ccxt_announcements/92).
     'BinanceFutures': {
         'apiKey': os.environ.get('BINANCE_FUTURES_API_KEY', ''),
         'secret': os.environ.get('BINANCE_FUTURES_API_SECRET', ''),
@@ -102,9 +105,10 @@ TREND_STOP_LOSS_PCT = 10.0
 TREND_CROSSOVER_THRESHOLD_PCT = 0.03
 
 # --- FUNDING RATE / ARBITRAGE DE FINANCEMENT (cash-and-carry delta-neutre) ---
-# Nécessite BINANCE_FUTURES_API_KEY/SECRET (testnet.binancefuture.com, séparé
-# du testnet spot). Sans ces clés, ou si FUNDING_ARB_ENABLED=False, se
-# comporte en monitoring/alerte seulement -- aucune exécution.
+# Nécessite BINANCE_FUTURES_API_KEY/SECRET générées sur demo.binance.com
+# (Demo Trading, séparé du testnet spot -- PAS testnet.binancefuture.com).
+# Sans ces clés, ou si FUNDING_ARB_ENABLED=False, se comporte en
+# monitoring/alerte seulement -- aucune exécution.
 FUNDING_RATE_SYMBOL = "BTC/USDT:USDT"
 FUNDING_RATE_ALERT_APR_PCT = 15.0
 

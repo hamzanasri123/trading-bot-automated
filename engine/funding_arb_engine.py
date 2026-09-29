@@ -98,8 +98,10 @@ class FundingArbEngine:
         if not self._configured():
             self.logger.warning(
                 "BinanceFutures API keys not configured (BINANCE_FUTURES_API_KEY/SECRET). "
-                "Funding Arb Engine is inactive. Register separately at testnet.binancefuture.com "
-                "if you want this engine to run -- your spot testnet keys will not work here."
+                "Funding Arb Engine is inactive. Generate Demo Trading keys separately at "
+                "https://demo.binance.com/en/my/settings/api-management if you want this engine "
+                "to run -- your spot testnet keys will not work here, and neither will old "
+                "testnet.binancefuture.com keys (Binance retired sandbox mode for futures)."
             )
             return
 
