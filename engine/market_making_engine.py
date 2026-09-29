@@ -45,7 +45,7 @@ class MarketMakingEngine:
         # médian coté de ce % vers le bas (moins attractif d'acheter encore,
         # plus attractif de vendre) pour encourager un retour naturel à zéro.
         self.max_skew_pct = 0.15
-        self.requote_min_interval = 3  # secondes entre deux recotations
+        self.requote_min_interval = 9  # secondes entre deux recotations
 
         self.inventory_qty = 0.0
         self.inventory_cost_usd = 0.0
