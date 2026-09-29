@@ -5,6 +5,7 @@ from execution.live_order_manager import LiveOrderManager
 from engine.data_engine import DataEngine
 from engine.triangular_engine import TriangularEngine
 from engine.cross_exchange_engine import CrossExchangeEngine
+from engine.market_making_engine import MarketMakingEngine
 from connectors.binance_connector import BinanceConnector
 from connectors.okx_connector import OkxConnector
 from utils.notifier import Notifier
@@ -45,7 +46,15 @@ async def main_bot():
     triangular_symbols = ["BTC/USDC"] + [f"{leg}/BTC" for leg in triangular_legs] + [f"{leg}/USDC" for leg in triangular_legs]
     binance_connector = BinanceConnector(data_engine, symbols=triangular_symbols)
 
-    tasks = [asyncio.create_task(binance_connector.run()), asyncio.create_task(triangular_engine.run())]
+    # Market making algorithmique (risque d'inventaire, pas d'arbitrage) sur
+    # DOT/USDC -- déjà souscrit via triangular_symbols, pas de flux en plus.
+    market_making_engine = MarketMakingEngine(data_engine, order_manager, notifier, trade_logger, platform='Binance', symbol='DOT/USDC')
+
+    tasks = [
+        asyncio.create_task(binance_connector.run()),
+        asyncio.create_task(triangular_engine.run()),
+        asyncio.create_task(market_making_engine.run()),
+    ]
 
     # Arbitrage inter-exchange (Binance <-> OKX) en parallèle du triangulaire,
     # uniquement si OKX est bien configuré et connecté.
@@ -54,9 +63,9 @@ async def main_bot():
         cross_engine = CrossExchangeEngine(data_engine.order_books, order_manager, notifier, trade_logger, symbol="BTC/USDC", platform_a="Binance", platform_b="OKX")
         cross_engine.register_listeners(data_engine)
         tasks += [asyncio.create_task(okx_connector.run()), asyncio.create_task(cross_engine.run())]
-        logging.info("Starting triangular AND cross-exchange (Binance/OKX) arbitrage tasks...")
+        logging.info("Starting triangular, market making AND cross-exchange (Binance/OKX) arbitrage tasks...")
     else:
-        logging.warning("OKX not configured/connected -- running triangular arbitrage only.")
+        logging.warning("OKX not configured/connected -- running triangular and market making only.")
 
     # --- CORRECTION : La tâche du Notifier est supprimée ---
     # asyncio.create_task(notifier.run())
@@ -77,6 +86,9 @@ async def main_bot():
         logging.info("Initiating shutdown procedure...")
         for task in tasks: task.cancel()
         await asyncio.gather(*tasks, return_exceptions=True)
+        # Le market making pose de vrais ordres limit qui restent actifs sur
+        # l'exchange tant qu'ils ne sont pas explicitement annulés.
+        await market_making_engine.shutdown()
         await order_manager.close_all()
         trade_logger.close()
         logging.info("All tasks have been cancelled and connections closed.")

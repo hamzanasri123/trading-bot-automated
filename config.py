@@ -49,3 +49,17 @@ MIN_PROFIT_PCT_TRIANGULAR = 0.10
 # reste sur une seule plateforme) -- marge de sécurité plus large contre le
 # risque que le marché bouge entre les deux ordres.
 MIN_PROFIT_PCT_CROSS = 0.20
+
+# --- MARKET MAKING (stratégie différente : risque d'inventaire, pas d'exécution) ---
+# Demi-spread (en %) appliqué de chaque côté du prix médian pour les ordres
+# post-only. Total du spread coté = 2x cette valeur. Doit couvrir 2x les frais
+# maker (aller-retour) plus une marge de profit.
+MM_HALF_SPREAD_PCT = 0.20
+# Exposition maximale en USD que la stratégie peut accumuler (achats non encore
+# revendus). Au-delà, elle arrête de coter à l'achat jusqu'à ce que l'inventaire
+# redescende.
+MM_MAX_INVENTORY_USD = MAX_TRADE_SIZE_USD * 3
+# Coupe-circuit dédié : si la perte latente (mark-to-market) sur l'inventaire
+# détenu dépasse ce % de l'exposition maximale, on liquide immédiatement au
+# marché plutôt que d'attendre un retour à l'équilibre qui n'arrive pas.
+MM_STOP_LOSS_PCT = 20.0
