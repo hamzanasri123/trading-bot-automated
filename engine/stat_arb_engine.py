@@ -43,6 +43,18 @@ class StatArbEngine:
         self.trade_size_usd = STAT_ARB_TRADE_SIZE_USD
         self.stop_loss_pct = STAT_ARB_STOP_LOSS_PCT
 
+        # STAT_ARB_SYMBOL (ETH/BTC par défaut) est coté en BTC, pas en USD --
+        # contrairement à TrendFollowingEngine/FundingArbEngine qui utilisent
+        # tous les deux des paires cotées en USDC. `trade_size_usd` (un
+        # montant en dollars) ne peut donc jamais être passé tel quel comme
+        # `cost` d'un ordre market sur ce symbole : ce serait dépenser
+        # littéralement 150 BTC au lieu de 150$ de BTC. Conversion BTC<->USD
+        # mise en cache (rafraîchie toutes les 30s) pour éviter d'interroger
+        # l'exchange à chaque tick de la boucle événementielle.
+        self._quote_usd_price = None
+        self._quote_usd_price_updated = 0.0
+        self._quote_usd_refresh_interval = 30
+
         self.position_qty = 0.0
         self.position_cost_usd = 0.0
         self.session_pnl_usd = 0.0
@@ -75,6 +87,34 @@ class StatArbEngine:
     def _book(self):
         return self._order_books.get((self.platform, self.symbol))
 
+    def _quote_currency(self):
+        return self.symbol.split('/')[1]
+
+    async def _get_quote_usd_price(self, force=False):
+        """
+        Prix en USD d'une unité de la devise de cotation du symbole (BTC
+        pour ETH/BTC). Retourne 1.0 directement pour une devise déjà
+        stable-USD (pas d'appel réseau). `force=True` ignore le cache --
+        utilisé à la sortie de position, où la précision compte pour le
+        P&L réalisé (et donc le coupe-circuit), contrairement au sizing à
+        l'entrée où un prix vieux de quelques secondes est sans conséquence.
+        """
+        quote = self._quote_currency()
+        if quote in ('USDC', 'USDT', 'USD', 'BUSD', 'FDUSD'):
+            return 1.0
+        now = time.time()
+        if not force and self._quote_usd_price is not None and (now - self._quote_usd_price_updated) < self._quote_usd_refresh_interval:
+            return self._quote_usd_price
+        try:
+            ticker = await self._order_manager.exchanges[self.platform].fetch_ticker(f"{quote}/USDC")
+            price = ticker.get('last') or ticker.get('close')
+            if price:
+                self._quote_usd_price = price
+                self._quote_usd_price_updated = now
+        except Exception as e:
+            self.logger.error(f"[StatArb] Failed to fetch {quote}/USDC price: {e}")
+        return self._quote_usd_price
+
     async def run(self):
         self.logger.info(f"Stat-Arb Engine is running on {self.platform} {self.symbol} (entry z={self.entry_zscore}, exit z={self.exit_zscore}).")
         while True:
@@ -103,14 +143,19 @@ class StatArbEngine:
                 continue
 
             if self.position_qty > 0 and self.position_cost_usd > 0:
-                unrealized_pct = ((mid_price * self.position_qty) - self.position_cost_usd) / self.position_cost_usd * 100
-                if unrealized_pct <= -self.stop_loss_pct:
-                    # Le stop-loss ne doit jamais attendre la fin du cooldown
-                    # post-entrée : retarder une sortie qui limite les pertes
-                    # pour éviter un whipsaw serait une fausse économie -- la
-                    # position est déjà ouverte et expose du capital réel.
-                    await self._exit_position(reason="stop-loss")
-                    continue
+                quote_usd = await self._get_quote_usd_price()
+                if quote_usd is None:
+                    self.logger.error(f"[StatArb] Cannot price {self._quote_currency()} in USD -- stop-loss check skipped this tick.")
+                else:
+                    current_value_usd = mid_price * self.position_qty * quote_usd
+                    unrealized_pct = (current_value_usd - self.position_cost_usd) / self.position_cost_usd * 100
+                    if unrealized_pct <= -self.stop_loss_pct:
+                        # Le stop-loss ne doit jamais attendre la fin du cooldown
+                        # post-entrée : retarder une sortie qui limite les pertes
+                        # pour éviter un whipsaw serait une fausse économie -- la
+                        # position est déjà ouverte et expose du capital réel.
+                        await self._exit_position(reason="stop-loss")
+                        continue
 
             if not self._is_trading_enabled:
                 continue
@@ -126,10 +171,17 @@ class StatArbEngine:
     async def _enter_position(self, zscore):
         self.logger.warning(f"[StatArb] Entry signal on {self.symbol}: z-score={zscore:.2f} <= -{self.entry_zscore}. Buying.")
         self._is_trading_enabled = False
-        order = await self._order_manager.create_market_order(self.platform, self.symbol, 'buy', cost=self.trade_size_usd)
+        quote_usd = await self._get_quote_usd_price()
+        if quote_usd is None:
+            self.logger.error(f"[StatArb] Could not price {self._quote_currency()} in USD -- aborting entry rather than risking a mis-sized order.")
+            asyncio.create_task(self._reenable_after_cooldown())
+            return
+        cost_in_quote = self.trade_size_usd / quote_usd
+        order = await self._order_manager.create_market_order(self.platform, self.symbol, 'buy', cost=cost_in_quote)
         if order and order.get('filled'):
             self.position_qty = order['filled']
-            self.position_cost_usd = order.get('cost') or (order['filled'] * (order.get('average') or 0))
+            quote_spent = order.get('cost') or (order['filled'] * (order.get('average') or 0))
+            self.position_cost_usd = quote_spent * quote_usd
             self.logger.info(f"[StatArb] Entered position: {self.position_qty:.6f} {self.base_asset} @ cost ${self.position_cost_usd:.4f}")
             await self.notifier.send_message(f"📉 *Stat-Arb Entry* 📉\n{self.symbol}: bought {self.position_qty:.6f} {self.base_asset} (z-score {zscore:.2f})")
             if self.trade_logger:
@@ -144,7 +196,15 @@ class StatArbEngine:
         self._is_trading_enabled = False
         order = await self._order_manager.create_market_order(self.platform, self.symbol, 'sell', amount=qty)
         if order and order.get('filled'):
-            proceeds = order.get('cost') or (order['filled'] * (order.get('average') or 0))
+            quote_proceeds = order.get('cost') or (order['filled'] * (order.get('average') or 0))
+            # Prix frais (pas le cache) pour ce calcul : il alimente le P&L
+            # réalisé et donc le coupe-circuit, contrairement au sizing à
+            # l'entrée où un prix vieux de quelques secondes est sans enjeu.
+            quote_usd = await self._get_quote_usd_price(force=True)
+            if quote_usd is None:
+                self.logger.error(f"[StatArb] Could not price {self._quote_currency()} in USD at exit -- realized P&L below may be inaccurate.")
+                quote_usd = self._quote_usd_price or 1.0  # dernier prix connu plutôt que planter, mieux que rien
+            proceeds = quote_proceeds * quote_usd
             realized_pnl = proceeds - self.position_cost_usd
             self.session_pnl_usd += realized_pnl
             self.position_qty = 0.0
