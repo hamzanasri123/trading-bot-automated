@@ -34,8 +34,9 @@ class TriangularEngine:
       de triangles = plus de chances qu'UN d'eux déclenche, pas plusieurs
       exécutions simultanées.
     """
-    def __init__(self, order_books: dict, order_manager, notifier, trade_logger=None, platform='Binance', legs=None):
-        self._order_books = order_books
+    def __init__(self, data_engine, order_manager, notifier, trade_logger=None, platform='Binance', legs=None):
+        self._data_engine = data_engine
+        self._order_books = data_engine.order_books
         self._order_manager = order_manager
         self.notifier = notifier
         self.trade_logger = trade_logger
@@ -50,6 +51,13 @@ class TriangularEngine:
             {"leg_asset": leg, "pair_leg": f"{leg}/BTC", "pair_quote": f"{leg}/USDC"}
             for leg in legs
         ]
+        self._relevant_symbols = {self.pair_bridge} | {t["pair_leg"] for t in self.triangles} | {t["pair_quote"] for t in self.triangles}
+
+        # Réaction événementielle : dès qu'une des paires suivies reçoit une
+        # mise à jour de carnet, ce signal se déclenche et run() se réveille
+        # immédiatement au lieu d'attendre le prochain tick d'une minuterie.
+        self._new_data_event = asyncio.Event()
+        data_engine.add_listener(self._on_book_update)
 
         self.trade_size_usdc = MAX_TRADE_SIZE_USD
         # Sizing symétrique : sur un cycle gagnant, on ajoute ce pourcentage du
@@ -85,11 +93,23 @@ class TriangularEngine:
     def _taker_fee_pct(self):
         return self._order_manager.get_fees(self.platform).get('taker', 0.1)
 
+    def _on_book_update(self, platform, symbol):
+        if platform == self.platform and symbol in self._relevant_symbols:
+            self._new_data_event.set()
+
     async def run(self):
         leg_names = ", ".join(t["leg_asset"] for t in self.triangles)
         self.logger.info(f"Triangular Engine is running on {self.platform}, watching {len(self.triangles)} triangle(s) via {self.pair_bridge}: {leg_names}.")
         while True:
-            await asyncio.sleep(0.2)
+            # Réagit dès qu'une nouvelle donnée arrive sur une paire suivie,
+            # au lieu d'attendre un tick de minuterie fixe. Le timeout de 1s
+            # n'est qu'un filet de sécurité (statut affiché, pas de blocage
+            # indéfini si le flux WebSocket s'interrompt).
+            try:
+                await asyncio.wait_for(self._new_data_event.wait(), timeout=1.0)
+            except asyncio.TimeoutError:
+                pass
+            self._new_data_event.clear()
             current_time = time.time()
             if current_time - self._last_print_time > self._print_interval:
                 self._print_status()

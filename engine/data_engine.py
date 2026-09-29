@@ -32,6 +32,14 @@ class DataEngine:
     def __init__(self):
         self.order_books = {}
         self.logger = logging.getLogger(self.__class__.__name__)
+        # Callbacks synchrones (platform, symbol) -> None, appelés après chaque
+        # mise à jour réussie d'un carnet. Permet à un consommateur (ex:
+        # TriangularEngine) de réagir immédiatement plutôt que de sonder sur
+        # une minuterie fixe.
+        self._listeners = []
+
+    def add_listener(self, callback):
+        self._listeners.append(callback)
 
     def process_update(self, packaged_data: dict):
         try:
@@ -40,7 +48,7 @@ class DataEngine:
             if book_key not in self.order_books:
                 self.order_books[book_key] = OrderBook()
                 self.logger.info(f"Order book created for {platform}-{symbol}.")
-            
+
             # --- CORRECTION DÉFINITIVE APPLIQUÉE ICI ---
             # Gère les deux formats de données :
             # Binance utilise 'b' (bids) et 'a' (asks)
@@ -53,7 +61,13 @@ class DataEngine:
                 return
 
             self.order_books[book_key].update(bids_data, asks_data)
-            
+
+            for callback in self._listeners:
+                try:
+                    callback(platform, symbol)
+                except Exception as e:
+                    self.logger.error(f"Error in order book listener: {e}", exc_info=True)
+
         except Exception as e:
             self.logger.error(f"Error processing direct update in DataEngine: {e}", exc_info=True)
 

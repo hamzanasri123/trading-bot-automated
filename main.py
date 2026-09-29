@@ -33,7 +33,7 @@ async def main_bot():
     logging.info("-----------------------------")
 
     data_engine = DataEngine()
-    triangular_engine = TriangularEngine(data_engine.order_books, order_manager, notifier, trade_logger, platform='Binance', legs=triangular_legs)
+    triangular_engine = TriangularEngine(data_engine, order_manager, notifier, trade_logger, platform='Binance', legs=triangular_legs)
 
     triangular_symbols = ["BTC/USDC"] + [f"{leg}/BTC" for leg in triangular_legs] + [f"{leg}/USDC" for leg in triangular_legs]
     binance_connector = BinanceConnector(data_engine, symbols=triangular_symbols)
