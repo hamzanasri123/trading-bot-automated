@@ -74,7 +74,10 @@ class TriangularEngine:
         self._is_trading_enabled = True
         self._cooldown = 5
         self._last_print_time = 0
-        self._print_interval = 10
+        # Purement cosmétique : fréquence d'affichage du statut dans la console.
+        # La détection réelle d'opportunité tourne déjà toutes les 0.2s dans
+        # run(), indépendamment de cette valeur.
+        self._print_interval = 2
 
     def _book(self, symbol):
         return self._order_books.get((self.platform, symbol))
