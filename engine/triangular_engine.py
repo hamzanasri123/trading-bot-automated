@@ -41,6 +41,12 @@ class TriangularEngine:
         self.pair_quote = "ETH/USDC"    # USDC <-> ETH
 
         self.trade_size_usdc = MAX_TRADE_SIZE_USD
+        # Réinvestissement : sur un trade gagnant, on ajoute ce pourcentage du
+        # gain à la taille du prochain trade (compounding progressif). Capé à
+        # 10x la taille de départ pour éviter un emballement incontrôlé si une
+        # série de gains s'enchaîne.
+        self.reinvest_pct = 0.5
+        self.max_trade_size_usdc = MAX_TRADE_SIZE_USD * 10
         # Marge de sécurité au-delà des 3 frais taker, pour absorber le slippage
         # et l'imprécision du calcul en top-of-book.
         self.min_profit_pct = 0.15
@@ -172,6 +178,13 @@ class TriangularEngine:
                     profit_usd=real_profit_usd, profit_pct=real_profit_pct,
                     details=f"direction={direction}, legs=" + ",".join(f"{l['symbol']}:{l['order']['id']}" for l in executed)
                 )
+            # Réinvestissement : sur un trade gagnant, on ajoute une part du gain
+            # à la taille du prochain trade (capé pour éviter un emballement).
+            if real_profit_usd > 0:
+                old_size = self.trade_size_usdc
+                new_size = min(old_size + real_profit_usd * self.reinvest_pct, self.max_trade_size_usdc)
+                self.trade_size_usdc = new_size
+                self.logger.info(f"[Triangular] Reinvesting {self.reinvest_pct*100:.0f}% of the gain: next trade size ${old_size:.4f} -> ${new_size:.4f}")
 
         asyncio.create_task(self.cooldown_trading())
 
