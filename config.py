@@ -42,3 +42,10 @@ MAX_TRADE_SIZE_USD = 15.0
 # contre le slippage et l'imprécision du calcul en haut du carnet. Plus bas =
 # plus de trades tentés, mais moins de marge d'erreur par trade.
 MIN_PROFIT_PCT_TRIANGULAR = 0.10
+
+# Même principe pour l'arbitrage inter-exchange (Binance <-> OKX) : seuil au-
+# delà des 2 frais taker déjà déduits. Plus haut que le triangulaire car il y a
+# un vrai délai réseau entre les deux jambes (contrairement au triangulaire, qui
+# reste sur une seule plateforme) -- marge de sécurité plus large contre le
+# risque que le marché bouge entre les deux ordres.
+MIN_PROFIT_PCT_CROSS = 0.20

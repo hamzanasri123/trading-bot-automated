@@ -4,7 +4,9 @@ from config import PAPER_TRADING_MODE, TELEGRAM_TOKEN, TELEGRAM_CHAT_ID, API_KEY
 from execution.live_order_manager import LiveOrderManager
 from engine.data_engine import DataEngine
 from engine.triangular_engine import TriangularEngine
+from engine.cross_exchange_engine import CrossExchangeEngine
 from connectors.binance_connector import BinanceConnector
+from connectors.okx_connector import OkxConnector
 from utils.notifier import Notifier
 from utils.trade_logger import TradeLogger
 
@@ -23,7 +25,12 @@ async def main_bot():
 
     await order_manager.initialize()
 
-    triangular_legs = ["ETH", "XRP", "SOL", "NEAR"]
+    # Note : ce sont toujours des paires Binance -- toujours surveillées par
+    # les mêmes bots professionnels que ETH/XRP/SOL/NEAR. Ça élargit le nombre
+    # d'opportunités surveillées, mais ça ne garantit pas une vraie inefficacité
+    # de marché (contrairement à un exchange différent ou des paires vraiment
+    # peu tradées, qu'on n'a pas les moyens de vérifier depuis cet environnement).
+    triangular_legs = ["ETH", "XRP", "SOL", "NEAR", "DOGE", "ADA", "LINK", "DOT", "LTC", "AVAX"]
 
     logging.info("--- Initial Balance Check ---")
     for platform in order_manager.exchanges.keys():
@@ -38,13 +45,21 @@ async def main_bot():
     triangular_symbols = ["BTC/USDC"] + [f"{leg}/BTC" for leg in triangular_legs] + [f"{leg}/USDC" for leg in triangular_legs]
     binance_connector = BinanceConnector(data_engine, symbols=triangular_symbols)
 
-    logging.info("Starting triangular arbitrage bot tasks...")
-    tasks = [
-        asyncio.create_task(binance_connector.run()),
-        asyncio.create_task(triangular_engine.run()),
-        # --- CORRECTION : La tâche du Notifier est supprimée ---
-        # asyncio.create_task(notifier.run())
-    ]
+    tasks = [asyncio.create_task(binance_connector.run()), asyncio.create_task(triangular_engine.run())]
+
+    # Arbitrage inter-exchange (Binance <-> OKX) en parallèle du triangulaire,
+    # uniquement si OKX est bien configuré et connecté.
+    if 'OKX' in order_manager.exchanges:
+        okx_connector = OkxConnector(data_engine)
+        cross_engine = CrossExchangeEngine(data_engine.order_books, order_manager, notifier, trade_logger, symbol="BTC/USDC", platform_a="Binance", platform_b="OKX")
+        cross_engine.register_listeners(data_engine)
+        tasks += [asyncio.create_task(okx_connector.run()), asyncio.create_task(cross_engine.run())]
+        logging.info("Starting triangular AND cross-exchange (Binance/OKX) arbitrage tasks...")
+    else:
+        logging.warning("OKX not configured/connected -- running triangular arbitrage only.")
+
+    # --- CORRECTION : La tâche du Notifier est supprimée ---
+    # asyncio.create_task(notifier.run())
 
     loop = asyncio.get_running_loop()
     def handle_shutdown_signal():
